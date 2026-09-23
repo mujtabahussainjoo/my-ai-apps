@@ -1,0 +1,7 @@
+{
+  "name": "mypa-desktop",
+  "version": "0.1.0",
+  "description": "myPA desktop wrapper (Electron, optional — needs Node)",
+  "main": "main.js",
+  "scripts": { "start": "electron .", "dist": "electron-builder --win --linux --mac" }
+}

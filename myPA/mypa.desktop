@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=myPA
+Comment=Your Personal AI (OpenCode-compatible)
+Exec=sh -c 'cd "INSTALL_DIR" && python3 -m mypa --web'
+Icon=applications-internet
+Terminal=true
+Type=Application
+Categories=Utility;

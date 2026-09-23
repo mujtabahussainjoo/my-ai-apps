@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src https://api.openai.com https://api.anthropic.com https://www.google.com https://www.gstatic.com https://*.googleapis.com; img-src 'self' data: blob:; media-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+  <title>AI Assistant</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app">
+    <div class="titlebar">
+      <div class="brand">
+        <span class="orb"></span>
+        <div class="brand-text">
+          <strong>AI Assistant</strong>
+          <span>Private · Hidden from capture</span>
+        </div>
+      </div>
+      <div class="win-controls">
+        <button id="minBtn" class="icon-btn" title="Minimize">—</button>
+        <button id="hideBtn" class="icon-btn" title="Hide (Ctrl+Shift+A)">✕</button>
+      </div>
+    </div>
+
+    <section id="settings" class="card">
+      <div class="row">
+        <label>Provider
+          <select id="provider">
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic</option>
+          </select>
+        </label>
+        <label>Model
+          <input id="model" placeholder="gpt-4o-mini / claude-3-5-sonnet-latest" />
+        </label>
+      </div>
+      <div class="row">
+        <label class="grow">API Key · stored locally only
+          <input id="apiKey" type="password" placeholder="sk-... / sk-ant-..." autocomplete="off" />
+        </label>
+        <button id="saveKey" class="primary">Save</button>
+      </div>
+      <p class="hint"><kbd>Ctrl+Shift+A</kbd> show / hide · <kbd>Ctrl+Shift+H</kbd> minimize · <kbd>Enter</kbd> send · 🎤 you · 📞 caller · 🔊 answer · 👁 read screen · no taskbar icon</p>
+    </section>
+
+    <div id="callerBar">
+      <button id="callerBtn" title="Capture the other person's voice (system audio) during calls">📞 Enable caller voice</button>
+      <button id="stayBtn" title="Stay above fullscreen apps; hides when idle, returns on mouse move">Stay On: Off</button>
+      <span id="callerStatus">off</span>
+    </div>
+
+    <main id="chat"></main>
+
+    <div id="previewWrap" class="hidden">
+      <img id="preview" alt="screenshot preview" />
+      <button id="clearImg" class="icon-btn">✕</button>
+    </div>
+
+    <footer>
+      <button id="shotBtn" class="icon-btn accent" title="Attach screenshot">📷</button>
+      <button id="readBtn" class="icon-btn accent" title="Read screen (pick a browser window)">👁</button>
+      <button id="listenBtn" class="icon-btn accent" title="Listen (voice input)">🎤</button>
+      <input id="input" placeholder="Ask anything or tap 🎤..." autocomplete="off" />
+      <button id="speakBtn" class="icon-btn" title="Speak last answer">🔊</button>
+      <button id="sendBtn" class="primary">Send</button>
+    </footer>
+
+    <div id="sourcePicker" class="hidden">
+      <div class="picker-card">
+        <div class="picker-head">
+          <strong>Read screen — pick a window</strong>
+          <button id="pickerClose" class="icon-btn" title="Cancel">✕</button>
+        </div>
+        <div id="sourceList"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="./renderer.js"></script>
+</body>
+</html>

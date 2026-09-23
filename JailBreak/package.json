@@ -1,0 +1,18 @@
+{
+  "name": "visible-ai-assistant",
+  "version": "0.1.0",
+  "description": "Visible-on-screenshare desktop AI assistant with BYOK for OpenAI + Anthropic",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc && node scripts/copy-assets.js",
+    "start": "electron dist/main.js",
+    "start:hidden": "wscript scripts\\start-hidden.vbs",
+    "dev": "npm run build && npm start"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.12.0",
+    "electron": "^33.0.0",
+    "typescript": "^5.5.0"
+  }
+}

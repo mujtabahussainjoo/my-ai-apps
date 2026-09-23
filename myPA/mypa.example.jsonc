@@ -1,0 +1,16 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "app": "myPA",
+  "theme": "mypa-dark",
+  "default_model": "opencode/muse-spark-1.3-contributor-free",
+  "models_enabled": ["opencode/muse-spark-1.3-contributor-free"],
+  // No rules by default — add your own allow/deny/ask entries here.
+  // e.g. { "action": "shell", "resource": "rm *", "effect": "deny" }
+  "permissions": [],
+  "providers": {
+    "opencode": { "enabled": true },
+    "openai": { "enabled": false, "api_key": "{env:OPENAI_API_KEY}", "model": "gpt-4o-mini" },
+    "anthropic": { "enabled": false, "api_key": "{env:ANTHROPIC_API_KEY}", "model": "claude-sonnet-4-5" },
+    "local": { "enabled": false, "base_url": "http://127.0.0.1:11434", "model": "llama3.1:8b" }
+  }
+}

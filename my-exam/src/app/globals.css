@@ -1,0 +1,164 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
+  --color-primary: #6366f1;
+  --color-surface: #15151d;
+  --color-surface2: #1b1b26;
+  --color-edge: rgb(255 255 255 / 0.09);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+:root {
+  --bg: #0a0a12;
+  --fg: #ececf1;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f6f9;
+    --fg: #16161d;
+  }
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+/* ---------- reusable pieces ---------- */
+
+.card {
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.05), rgb(255 255 255 / 0.02));
+  border: 1px solid var(--color-edge);
+  border-radius: 1.25rem;
+}
+
+.glass {
+  background: rgb(20 20 30 / 0.72);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.grad-text {
+  background: linear-gradient(92deg, #818cf8, #c084fc 45%, #f472b6);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 0.75rem;
+  font-weight: 600;
+  font-size: 0.875rem;
+  padding: 0.625rem 1rem;
+  transition: all 0.15s ease;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.btn-primary {
+  color: #fff;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6 60%, #a855f7);
+  box-shadow: 0 8px 24px -12px rgb(139 92 246 / 0.7);
+}
+.btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+
+.btn-secondary {
+  background: rgb(255 255 255 / 0.06);
+  border-color: var(--color-edge);
+  color: var(--fg);
+}
+.btn-secondary:hover:not(:disabled) { background: rgb(255 255 255 / 0.1); }
+
+.btn-danger {
+  background: rgb(244 63 94 / 0.12);
+  border-color: rgb(244 63 94 / 0.35);
+  color: #fda4af;
+}
+.btn-danger:hover:not(:disabled) { background: rgb(244 63 94 / 0.22); }
+
+.input {
+  width: 100%;
+  border-radius: 0.75rem;
+  border: 1px solid var(--color-edge);
+  background: rgb(0 0 0 / 0.25);
+  color: var(--fg);
+  padding: 0.625rem 0.875rem;
+  font-size: 0.875rem;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.input::placeholder { color: rgb(255 255 255 / 0.35); }
+.input:focus {
+  border-color: rgb(139 92 246 / 0.6);
+  box-shadow: 0 0 0 3px rgb(139 92 246 / 0.18);
+}
+select.input option { background: #15151d; color: #ececf1; }
+
+.label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgb(255 255 255 / 0.5);
+  margin-bottom: 0.35rem;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 0.5rem;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.75rem;
+  background: rgb(255 255 255 / 0.07);
+  border: 1px solid var(--color-edge);
+}
+
+.prose-answer { white-space: pre-wrap; word-break: break-word; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: rgb(255 255 255 / 0.14); border-radius: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.rise { animation: rise 0.35s ease both; }
+
+.noise {
+  position: relative;
+}
+.noise::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.03;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
+}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, Plus, Trash2, X, Settings } from "lucide-react";
 import { Button, ErrorText, Field } from "@/components/ui";
@@ -24,9 +24,18 @@ export function CreateExamForm() {
   const [color, setColor] = useState("#6366f1");
   const [open, setOpen] = useState(false);
 
-  if (state && "ok" in state && state.ok && state.id && typeof window !== "undefined") {
-    router.push(`/exams/${state.id}`);
-  }
+  const wasPending = useRef(false);
+  useEffect(() => {
+    if (pending) {
+      wasPending.current = true;
+      return;
+    }
+    if (!wasPending.current) return;
+    wasPending.current = false;
+    if (state && "ok" in state && state.ok && typeof state.id === "string") {
+      router.push(`/exams/${state.id}`);
+    }
+  }, [pending, state, router]);
 
   if (!open) {
     return (
@@ -109,15 +118,32 @@ export function DeleteExamButton({ examId }: { examId: string }) {
   );
 }
 
-export function AddTopicForm({ examId, onDone }: { examId: string; onDone: () => void }) {
+export function AddTopicForm({
+  examId,
+  topics,
+  onDone,
+}: {
+  examId: string;
+  topics?: { id: string; name: string; parentId?: string | null }[];
+  onDone?: () => void;
+}) {
   const router = useRouter();
   const [state, action, pending] = useActionState<ActionResult, FormData>(createTopic, {} as ActionResult);
   const [open, setOpen] = useState(false);
 
-  if (state && "ok" in state && state.ok) {
-    router.refresh();
-    onDone();
-  }
+  const wasPending = useRef(false);
+  useEffect(() => {
+    if (pending) {
+      wasPending.current = true;
+      return;
+    }
+    if (!wasPending.current) return;
+    wasPending.current = false;
+    if (state && "ok" in state && state.ok) {
+      router.refresh();
+      onDone?.();
+    }
+  }, [pending, state, router, onDone]);
 
   if (!open) {
     return (
@@ -132,7 +158,17 @@ export function AddTopicForm({ examId, onDone }: { examId: string; onDone: () =>
       <input type="hidden" name="examId" value={examId} />
       <input type="hidden" name="description" value="" />
       <Field label="Topic name">
-        <input name="name" className="input" placeholder="e.g. Networking & Content Delivery" required />
+        <input name="name" className="input" placeholder="e.g. How LLMs Behave, or a main topic like LLMs" required />
+      </Field>
+      <Field label="Sub-topic of (optional)">
+        <select name="parentId" className="input" defaultValue="">
+          <option value="">— top-level topic —</option>
+          {topics?.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name}
+            </option>
+          ))}
+        </select>
       </Field>
       <Field label="Weightage (%)">
         <input name="weightage" type="number" min={0} max={100} defaultValue={10} className="input" />
@@ -156,26 +192,41 @@ export function EditTopicRow({
   name,
   weightage,
   description,
+  parentId,
+  topics,
 }: {
   id: string;
   examId: string;
   name: string;
   weightage: number;
   description: string | null;
+  parentId?: string | null;
+  topics?: { id: string; name: string; parentId?: string | null }[];
 }) {
-  const router = useRouter();
+const router = useRouter();
   const [editing, setEditing] = useState(false);
-  const [state, action, pending] = useActionState<ActionResult, FormData>(updateTopic, {} as ActionResult);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
-  if (state && "ok" in state && state.ok) {
+  const save = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setBusy(true);
+    setErr(null);
+    const fd = new FormData(e.currentTarget);
+    const res = await updateTopic({} as unknown as FormData, fd);
+    setBusy(false);
+    if (!res.ok) {
+      setErr(res.error);
+      return;
+    }
     setEditing(false);
     router.refresh();
-  }
+  };
 
   return (
     <div className="rounded-xl border border-white/8 bg-white/3 px-4 py-3">
       {editing ? (
-        <form action={action} className="space-y-3">
+        <form onSubmit={save} className="space-y-3">
           <input type="hidden" name="id" value={id} />
           <div className="grid gap-3 sm:grid-cols-[1fr_120px]">
             <div>
@@ -187,6 +238,19 @@ export function EditTopicRow({
               <input name="weightage" type="number" min={0} max={100} className="input" defaultValue={weightage} />
             </div>
           </div>
+          <div>
+            <label className="label">Sub-topic of</label>
+            <select name="parentId" className="input" defaultValue={parentId ?? ""}>
+              <option value="">— top-level topic —</option>
+              {topics
+                ?.filter((t) => t.id !== id)
+                .map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+            </select>
+          </div>
           {description !== null && (
             <input type="hidden" name="description" value={description} />
           )}
@@ -194,11 +258,11 @@ export function EditTopicRow({
             <Button type="button" variant="secondary" onClick={() => setEditing(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={pending}>
-              {pending && <Loader2 className="h-4 w-4 animate-spin" />} Save
+            <Button type="submit" disabled={busy}>
+              {busy && <Loader2 className="h-4 w-4 animate-spin" />} Save
             </Button>
           </div>
-          <ErrorText>{state && "error" in state ? state.error : ""}</ErrorText>
+          <ErrorText>{err}</ErrorText>
         </form>
       ) : (
         <div className="flex items-center gap-3">
@@ -238,7 +302,7 @@ function DeleteTopicButton({ topicId }: { topicId: string; examId?: string }) {
       className="rounded-lg p-2 text-foreground/50 hover:bg-rose-500/10 hover:text-rose-400"
       disabled={busy}
       onClick={async () => {
-        if (!confirm("Delete this topic?")) return;
+        if (!confirm("Delete this topic? Its subtopics will be deleted too.")) return;
         setBusy(true);
         await deleteTopic(topicId);
         router.refresh();

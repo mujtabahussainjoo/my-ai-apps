@@ -12,6 +12,8 @@ import {
   Trophy,
   Layers,
   Mic,
+  Bot,
+  Settings,
   LogOut,
   Menu,
   X,
@@ -30,11 +32,23 @@ const NAV = [
   { href: "/mock", label: "Mock Exams", icon: Trophy },
   { href: "/flashcards", label: "Flashcards", icon: Layers },
   { href: "/interview", label: "Interview Coach", icon: Mic },
+  { href: "/assistant", label: "AI Assistant", icon: Bot },
 ];
 
-export function AppShell({ userName, children }: { userName: string; children: React.ReactNode }) {
+export function AppShell({
+  userName,
+  userRole,
+  userEmail,
+  children,
+}: {
+  userName: string;
+  userRole?: "admin" | "user";
+  userEmail?: string;
+  children: React.ReactNode;
+}) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const isAdmin = userRole === "admin";
 
   const isActive = (href: string) => pathname === href || pathname.startsWith(href + "/");
 
@@ -65,26 +79,39 @@ export function AppShell({ userName, children }: { userName: string; children: R
 
   const bottom = (
     <div className="mt-auto space-y-3 border-t border-white/8 p-3">
-      <div className="flex items-center gap-3 rounded-xl bg-white/4 px-3 py-2.5">
-        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-fuchsia-500 text-sm font-bold text-white">
-          {userName.slice(0, 1).toUpperCase() || "U"}
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-semibold">{userName}</div>
-          <div className="flex items-center gap-1 text-[11px] text-emerald-400">
-            <TrendingUp className="h-3 w-3" /> actively preparing
+      <Link
+        href="/settings"
+        className="flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-medium text-foreground/55 transition-colors hover:bg-white/6 hover:text-foreground"
+      >
+        <Settings className="h-3.5 w-3.5" /> Settings
+      </Link>
+<div className="flex items-center gap-3 rounded-xl bg-white/4 px-3 py-2.5">
+          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-fuchsia-500 text-sm font-bold text-white">
+            {userName.slice(0, 1).toUpperCase() || "U"}
           </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5">
+              <span className="truncate text-sm font-semibold">{userName}</span>
+              {isAdmin && (
+                <span className="rounded-md bg-violet-500/20 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-violet-300 ring-1 ring-inset ring-violet-400/30">
+                  Admin
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-1 text-[11px] text-emerald-400">
+              <TrendingUp className="h-3 w-3" /> {isAdmin ? "all users · everything" : "actively preparing"}
+            </div>
+          </div>
+          <form action={logoutAction}>
+            <button
+              type="submit"
+              title="Sign out"
+              className="rounded-lg p-1.5 text-foreground/45 transition-colors hover:bg-white/8 hover:text-rose-400"
+            >
+              <LogOut className="h-4 w-4" />
+            </button>
+          </form>
         </div>
-        <form action={logoutAction}>
-          <button
-            type="submit"
-            title="Sign out"
-            className="rounded-lg p-1.5 text-foreground/45 transition-colors hover:bg-white/8 hover:text-rose-400"
-          >
-            <LogOut className="h-4 w-4" />
-          </button>
-        </form>
-      </div>
       <div className="rounded-xl border border-white/8 bg-white/4 p-3 text-[11px] leading-relaxed text-foreground/50">
         <span className="font-semibold text-foreground/80">PrepDesk</span> — study smarter with AI-generated exams built from
         your own materials.
@@ -138,6 +165,13 @@ export function AppShell({ userName, children }: { userName: string; children: R
 
       {/* Main content */}
       <main className="min-w-0 flex-1 px-4 pb-16 pt-20 sm:px-6 md:pt-8 lg:px-10">
+        {isAdmin && (
+          <div className="mx-auto mb-4 flex max-w-6xl items-center gap-2 rounded-xl border border-violet-400/25 bg-violet-500/10 px-4 py-2 text-xs font-medium text-violet-200">
+            <TrendingUp className="h-3.5 w-3.5" />
+            Admin view — showing every user&apos;s data. Regular accounts only see their own work.
+            {userEmail && <span className="ml-auto hidden text-violet-300/70 sm:inline">{userEmail}</span>}
+          </div>
+        )}
         <div className="mx-auto max-w-6xl">{children}</div>
       </main>
     </div>

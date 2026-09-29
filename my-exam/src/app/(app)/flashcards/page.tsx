@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { Layers, Flame } from "lucide-react";
 import { getCurrentUser } from "@/lib/auth";
-import { listExams, listTopics, listFlashcards } from "@/lib/data";
+import { listExams, listTopics, listFlashcards, listKnowledgeBases, listMaterials } from "@/lib/data";
 import { now } from "@/lib/db";
 import { EmptyState } from "@/components/ui";
 import { DeckPlayground, AddFlashcardForm, GenerateFlashcardsPanel } from "@/components/flashcards";
@@ -13,6 +13,7 @@ export default async function FlashcardsPage() {
   if (!user) redirect("/login");
   const exams = await listExams();
   const activeExam = exams[0] ?? null;
+  const knowledgeBases = await listKnowledgeBases();
 
   const [allCards, currentTime] = await Promise.all([
     listFlashcards({ limit: 1000 }),
@@ -72,16 +73,16 @@ export default async function FlashcardsPage() {
 
       <div className="grid gap-6 lg:grid-cols-[340px_1fr]">
         <div className="space-y-5">
-          {activeExam ? (
+          {knowledgeBases.length > 0 || activeExam ? (
             <>
-              <GenerateFlashcardsPanel examId={activeExam.id} />
-              <AddFlashcardForm examId={activeExam.id} topics={topics} />
+              <GenerateFlashcardsPanel examId={activeExam?.id ?? ""} knowledgeBases={knowledgeBases} topics={topics} materials={await listMaterials()} />
+              {activeExam ? <AddFlashcardForm examId={activeExam.id} topics={topics} /> : null}
             </>
           ) : (
             <EmptyState
               icon={<Layers className="h-6 w-6" />}
-              title="Create an exam first"
-              description="Flashcards are tied to exams so AI can generate them from that exam's materials."
+              title="Create an exam or knowledge base first"
+              description="Flashcards are generated from your training materials — add a knowledge base on the Materials page, or create an exam."
             />
           )}
         </div>

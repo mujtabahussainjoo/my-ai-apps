@@ -4,6 +4,9 @@ import { query } from "@/lib/db";
 
 const MAX_FILE_BYTES = 15 * 1024 * 1024;
 const MAX_URL_BYTES = 2 * 1024 * 1024;
+/** A whole folder arrives as one request, so it needs a ceiling of its own. */
+export const MAX_UPLOAD_FILES = 200;
+export const MAX_UPLOAD_TOTAL_BYTES = 60 * 1024 * 1024;
 
 export async function extractTextFromFile(
   buffer: Buffer,
@@ -122,6 +125,7 @@ export type StoredChunk = { materialId: string; position: number; content: strin
 
 /** Chunks, embeds and persists content for a material. */
 export async function embedAndStoreChunks(
+  userId: string | null,
   materialId: string,
   rawText: string
 ): Promise<{ chunks: number; failed?: number }> {
@@ -132,7 +136,7 @@ export async function embedAndStoreChunks(
     const batch = chunks.slice(i, i + BATCH);
     let vectors: number[][];
     try {
-      vectors = await embedTexts(batch);
+      vectors = await embedTexts(userId, batch);
     } catch {
       failed += batch.length;
       continue;
@@ -147,6 +151,16 @@ export async function embedAndStoreChunks(
     }
   }
   return { chunks: chunks.length - failed, failed };
+}
+
+/** Replaces a material's chunks after its content changed on re-upload. */
+export async function reindexMaterial(
+  userId: string | null,
+  materialId: string,
+  rawText: string
+): Promise<{ chunks: number; failed?: number }> {
+  await query("DELETE FROM chunks WHERE material_id = $1", [materialId]);
+  return embedAndStoreChunks(userId, materialId, rawText);
 }
 
 export { MAX_FILE_BYTES };

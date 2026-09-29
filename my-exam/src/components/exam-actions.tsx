@@ -11,10 +11,11 @@ import {
   createQuiz,
 } from "@/lib/actions";
 
-export function ExamAIzAction({ examId }: { examId: string }) {
+export function ExamAIzAction({ examId, knowledgeBases }: { examId: string; knowledgeBases: { id: string; name: string }[] }) {
   const router = useRouter();
   const [type, setType] = useState("mcq");
   const [count, setCount] = useState(8);
+  const [knowledgeBaseId, setKnowledgeBaseId] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -23,7 +24,7 @@ export function ExamAIzAction({ examId }: { examId: string }) {
     setBusy(true);
     setErr(null);
     setMsg(null);
-    const res = await generateQuestions({ examId, topicIds: [], type, count });
+    const res = await generateQuestions({ examId, knowledgeBaseId: knowledgeBaseId || null, topicIds: [], type, count });
     setBusy(false);
     if (!res.ok) {
       setErr(res.error);
@@ -38,7 +39,7 @@ export function ExamAIzAction({ examId }: { examId: string }) {
     setBusy(true);
     setErr(null);
     setMsg(null);
-    const res = await generateFlashcards({ examId, topicIds: [], count });
+    const res = await generateFlashcards({ examId, knowledgeBaseId: knowledgeBaseId || null, topicIds: [], count });
     setBusy(false);
     if (!res.ok) {
       setErr(res.error);
@@ -58,6 +59,19 @@ export function ExamAIzAction({ examId }: { examId: string }) {
       <p className="text-xs text-foreground/55">
         PrepDesk writes questions from your training materials (RAG), so everything is grounded in what you uploaded.
       </p>
+
+      {knowledgeBases.length > 0 && (
+        <Field label="Training material (knowledge base)">
+          <select className="input" value={knowledgeBaseId} onChange={(e) => setKnowledgeBaseId(e.target.value)}>
+            <option value="">All my materials</option>
+            {knowledgeBases.map((kb) => (
+              <option key={kb.id} value={kb.id}>
+                {kb.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
 
       <div className="grid gap-3 sm:grid-cols-[1fr_1fr_1fr]">
         <Field label="Type">

@@ -8,5 +8,5 @@ export default async function ProtectedLayout({ children }: { children: React.Re
   const user = await getCurrentUser();
   if (!user) redirect("/login");
 
-  return <AppShell userName={user.name}>{children}</AppShell>;
+  return <AppShell userName={user.name} userRole={user.role} userEmail={user.email}>{children}</AppShell>;
 }

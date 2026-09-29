@@ -3,10 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "postinstall": "node scripts/patch-react-perf.mjs",
+    "dev": "node scripts/dev.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "tsx scripts/quality-gate-check.ts",
+    "audit:questions": "tsx scripts/audit-questions.ts",
     "db:setup": "tsx scripts/db-setup.ts"
   },
   "dependencies": {

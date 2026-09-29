@@ -6,11 +6,28 @@ import { queryOne } from "@/lib/db";
 export const SESSION_COOKIE = "exam_session";
 const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
+export type Role = "admin" | "user";
+
 export type SessionUser = {
   id: string;
   email: string;
   name: string;
+  role: Role;
 };
+
+export function isAdmin(user: Pick<SessionUser, "role"> | null): boolean {
+  return user?.role === "admin";
+}
+
+/**
+ * Builds a SQL predicate that scopes rows to the user's own records — or to
+ * everything when the user is an admin. The placeholder always sits at
+ * `paramIdx` and `params` must contain the user id there, so downstream
+ * queries keep their parameter numbering unchanged.
+ */
+export function scoped(user: Pick<SessionUser, "id" | "role">, column: string, paramIdx = 1): string {
+  return isAdmin(user) ? `(${column} = $${paramIdx} OR TRUE)` : `${column} = $${paramIdx}`;
+}
 
 function secretKey() {
   const secret = process.env.SESSION_SECRET;
@@ -61,11 +78,17 @@ export const getCurrentUser = cache(async (): Promise<SessionUser | null> => {
   const token = store.get(SESSION_COOKIE)?.value;
   const userId = await verifyToken(token);
   if (!userId) return null;
-  const user = await queryOne<{ id: string; email: string; name: string }>(
-    "SELECT id, email, name FROM users WHERE id = $1",
+  const user = await queryOne<{ id: string; email: string; name: string; role: string }>(
+    "SELECT id, email, name, role FROM users WHERE id = $1",
     [userId]
   );
-  return user ?? null;
+  if (!user) return null;
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    role: user.role === "admin" ? "admin" : "user",
+  };
 });
 
 export async function requireUser(): Promise<SessionUser> {

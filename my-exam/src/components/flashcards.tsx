@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { FlipHorizontal2, Check, X, Trash2, Loader2, Plus, Wand2, Layers } from "lucide-react";
 import { Button, Field } from "@/components/ui";
+import { QuestionPrompt } from "@/components/question-prompt";
 import { reviewFlashcard, deleteFlashcard, addFlashcard, generateFlashcards } from "@/lib/actions";
 
 type Card = {
@@ -114,7 +115,13 @@ function RatedPill({ box }: { box: number }) {
   return <span className="tag text-xs text-violet-300">{labels[Math.min(box, 4)]}</span>;
 }
 
-export function AddFlashcardForm({ examId, topics }: { examId: string; topics: { id: string; name: string }[] }) {
+export function AddFlashcardForm({
+  examId,
+  topics,
+}: {
+  examId: string;
+  topics: { id: string; name: string; parentId?: string | null }[];
+}) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -156,14 +163,17 @@ export function AddFlashcardForm({ examId, topics }: { examId: string; topics: {
           <input name="back" className="input" required placeholder="Answer" />
         </Field>
       </div>
-      <Field label="Topic (optional)">
+      <Field label="Topic / Subtopic (optional)">
         <select name="topicId" className="input" defaultValue="">
           <option value="">Unassigned</option>
-          {topics.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.name}
-            </option>
-          ))}
+          {topics.map((t) => {
+            const parent = topics.find((p) => p.id === t.parentId);
+            return (
+              <option key={t.id} value={t.id}>
+                {parent ? `${parent.name} → ${t.name}` : t.name}
+              </option>
+            );
+          })}
         </select>
       </Field>
       {err && <div className="rounded-xl border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-sm text-rose-300">{err}</div>}
@@ -175,18 +185,61 @@ export function AddFlashcardForm({ examId, topics }: { examId: string; topics: {
   );
 }
 
-export function GenerateFlashcardsPanel({ examId }: { examId: string }) {
+export function GenerateFlashcardsPanel({
+  examId,
+  knowledgeBases,
+  defaultKnowledgeBaseId,
+  topics,
+  materials,
+}: {
+  examId: string;
+  knowledgeBases: { id: string; name: string }[];
+  defaultKnowledgeBaseId?: string | null;
+  topics?: { id: string; name: string; parentId?: string | null }[];
+  materials?: { id: string; title: string; knowledgeBaseName: string | null }[];
+}) {
   const router = useRouter();
   const [count, setCount] = useState(10);
+  const [knowledgeBaseId, setKnowledgeBaseId] = useState(defaultKnowledgeBaseId ?? "");
+  const [selectedTopic, setSelectedTopic] = useState("");
+  const [selectedMaterial, setSelectedMaterial] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+
+  const setCountSafe = (n: number) => setCount(Math.min(1000, Math.max(1, Math.round(n) || 1)));
+  const PRESETS = [10, 25, 50, 100, 250, 500, 1000];
+
+  // Generate only into subtopics (leaf topics); a topic with children is a group.
+  const leafTopics = useMemo(() => {
+    const items = topics ?? [];
+    const parentIds = new Set(items.map((t) => (t as { parentId?: string | null }).parentId).filter(Boolean));
+    return items
+      .filter((t) => !parentIds.has(t.id))
+      .map((t) => {
+        const parent = items.find((p) => p.id === t.parentId);
+        return { id: t.id, label: parent ? `${parent.name} → ${t.name}` : t.name };
+      });
+  }, [topics]);
+
+  // Subtopic options = the titles the user uploaded (chapters/sections).
+  const materialOptions = materials ?? [];
+  const multiKb = new Set(materialOptions.map((m) => m.knowledgeBaseName)).size > 1;
+  const useMaterialTargets = materialOptions.length > 0;
+  const effectiveMaterial = materialOptions.some((m) => m.id === selectedMaterial) ? selectedMaterial : "";
+  const effectiveTopic = leafTopics.some((t) => t.id === selectedTopic) ? selectedTopic : "";
 
   const run = async () => {
     setBusy(true);
     setErr(null);
     setMsg(null);
-    const res = await generateFlashcards({ examId: examId || null, topicIds: [], count });
+    const res = await generateFlashcards({
+      examId: examId || null,
+      knowledgeBaseId: knowledgeBaseId || null,
+      topicIds: effectiveMaterial ? [] : effectiveTopic ? [effectiveTopic] : [],
+      materialId: effectiveMaterial || null,
+      count,
+    });
     setBusy(false);
     if (!res.ok) {
       setErr(res.error);
@@ -208,16 +261,84 @@ export function GenerateFlashcardsPanel({ examId }: { examId: string }) {
       <h3 className="flex items-center gap-2 font-semibold">
         <Wand2 className="h-4 w-4 text-violet-300" /> Generate with AI
       </h3>
-      <div className="flex items-end gap-2">
-        <div className="w-28">
-          <Field label="Count">
-            <input type="number" min={1} max={30} className="input" value={count} onChange={(e) => setCount(Number(e.target.value))} />
+      <div
+        className={`grid items-end gap-3 ${
+          knowledgeBases.length > 0
+            ? "sm:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_7rem_auto]"
+            : "sm:grid-cols-[minmax(0,1.4fr)_7rem_auto] sm:max-w-lg"
+        }`}
+      >
+        {knowledgeBases.length > 0 && (
+          <div className="min-w-0">
+            <Field label="Training material (knowledge base)">
+              <select className="input" value={knowledgeBaseId} onChange={(e) => setKnowledgeBaseId(e.target.value)}>
+                <option value="">All my materials</option>
+                {knowledgeBases.map((kb) => (
+                  <option key={kb.id} value={kb.id}>
+                    {kb.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+        )}
+        <div className="min-w-0">
+          <Field label="Subtopic">
+            <select
+              className="input"
+              value={useMaterialTargets ? effectiveMaterial : effectiveTopic}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (useMaterialTargets) {
+                  setSelectedMaterial(v);
+                  setSelectedTopic("");
+                } else {
+                  setSelectedTopic(v);
+                  setSelectedMaterial("");
+                }
+              }}
+            >
+              <option value="">{useMaterialTargets ? "All my materials" : "All topics"}</option>
+              {useMaterialTargets
+                ? materialOptions.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {multiKb && m.knowledgeBaseName ? `${m.knowledgeBaseName} · ${m.title}` : m.title}
+                    </option>
+                  ))
+                : leafTopics.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.label}
+                    </option>
+                  ))}
+            </select>
           </Field>
         </div>
-        <Button type="submit" disabled={busy}>
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
-          Generate
-        </Button>
+        <div className="min-w-0">
+          <Field label="Number of cards">
+            <input type="number" min={1} max={1000} className="input" value={count} onChange={(e) => setCountSafe(Number(e.target.value))} />
+          </Field>
+        </div>
+        <div className="flex items-end">
+          <Button type="submit" disabled={busy} className="w-full whitespace-nowrap">
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
+            Generate
+          </Button>
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-foreground/50">Quick picks:</span>
+        {PRESETS.map((n) => (
+          <button
+            key={n}
+            type="button"
+            onClick={() => setCountSafe(n)}
+            className={`tag cursor-pointer transition-colors ${
+              count === n ? "border-violet-400/50 bg-violet-500/15 text-violet-200" : "text-foreground/60 hover:text-foreground"
+            }`}
+          >
+            {n}
+          </button>
+        ))}
       </div>
       {msg && <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">{msg}</div>}
       {err && <div className="rounded-xl border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-sm text-rose-300">{err}</div>}
@@ -277,7 +398,7 @@ export function DeckPlayground({
         {recentCards.map((c) => (
           <div key={c.id} className="card group flex items-start justify-between gap-3 p-4">
             <div className="min-w-0">
-              <div className="prose-answer text-sm font-medium leading-snug">{c.front}</div>
+              <QuestionPrompt text={c.front} className="text-sm" />
               {c.back && <div className="prose-answer mt-1 text-xs text-foreground/55">{c.back}</div>}
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {c.examTitle && <span className="tag">{c.examTitle}</span>}

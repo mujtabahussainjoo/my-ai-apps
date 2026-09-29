@@ -3,26 +3,40 @@
 import bcrypt from "bcryptjs";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
+import { recordEvent } from "@/lib/diagnostics";
 import { query, queryOne } from "@/lib/db";
 import {
   createSession,
   deleteSessionCookie,
   requireUser,
+  scoped,
   setSessionCookie,
+  type SessionUser,
 } from "@/lib/auth";
 import {
   MAX_FILE_BYTES,
+  MAX_UPLOAD_FILES,
+  MAX_UPLOAD_TOTAL_BYTES,
   embedAndStoreChunks,
+  reindexMaterial,
   extractTextFromFile,
   extractTextFromUrl,
 } from "@/lib/ingest";
-import { AIError, isAiAvailable } from "@/lib/ai";
-import { generateFromAI, persistGeneratedQuestions } from "@/lib/generate";
-import { interviewFeedbackPrompt } from "@/lib/prompts";
-import { chatJson } from "@/lib/ai";
+import { classifyUpload, titleFromPath } from "@/lib/material-path";
+import { AIError, chatCompletion, chatJson, isAiAvailable, ragSearch, testAiConfig, type AIChatMessage, type AIConfig, type AIProvider } from "@/lib/ai";
+import { generateFromAI, MAX_GEN, persistGeneratedQuestions } from "@/lib/generate";
+import { interviewFeedbackPrompt, assistantSystemPrompt } from "@/lib/prompts";
+import { ensureChatSession, getUserSettings, parseQuestions, type ChatSource } from "@/lib/data";
 import type { QuizQuestion, AnswerEntry, InterviewFeedback } from "@/lib/data";
+import { gradeAnswer } from "@/lib/grade";
 
-export type ActionResult = { ok: true; id?: string; redirect?: string; data?: unknown } | { ok: false; error: string };
+export type ActionResult =
+  | { ok: true; id?: string; redirect?: string; data?: unknown; warning?: string }
+  | { ok: false; error: string };
+
+export type ChatActionResult =
+  | { ok: true; userMessage: string; reply: string; sources: ChatSource[] }
+  | { ok: false; error: string };
 
 function guard(): ActionResult {
   return { ok: false, error: "Not authenticated" };
@@ -112,7 +126,7 @@ export async function updateExam(prev: unknown, formData: FormData): Promise<Act
   const id = str(formData.get("id"));
   const title = str(formData.get("title"));
   if (!id || !title) return { ok: false, error: "Exam id and title are required" };
-  const owned = await queryOne("SELECT id FROM exams WHERE id = $1 AND user_id = $2", [id, user.id]);
+  const owned = await queryOne(`SELECT id FROM exams WHERE id = $1 AND ${scoped(user, "user_id", 2)}`, [id, user.id]);
   if (!owned) return { ok: false, error: "Exam not found" };
   await query(
     `UPDATE exams SET title = $1, description = $2, target_date = $3::date, color = $4 WHERE id = $5`,
@@ -126,12 +140,38 @@ export async function updateExam(prev: unknown, formData: FormData): Promise<Act
 export async function deleteExam(id: string): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
-  const owned = await queryOne("SELECT id FROM exams WHERE id = $1 AND user_id = $2", [id, user.id]);
+  const owned = await queryOne(`SELECT id FROM exams WHERE id = $1 AND ${scoped(user, "user_id", 2)}`, [id, user.id]);
   if (!owned) return { ok: false, error: "Exam not found" };
   await query("DELETE FROM exams WHERE id = $1", [id]);
   revalidatePath("/exams");
   revalidatePath("/dashboard");
   return { ok: true };
+}
+
+async function topicParentError(
+  examId: string,
+  parentId: string | null,
+  selfId?: string
+): Promise<string | null> {
+  if (!parentId) return null;
+  const parent = await queryOne<{ exam_id: string; parent_id: string | null }>(
+    "SELECT exam_id, parent_id FROM topics WHERE id = $1",
+    [parentId]
+  );
+  if (!parent) return "Parent topic not found";
+  if (parent.exam_id !== examId) return "Parent topic must be in the same exam";
+  if (selfId) {
+    let cur = parent.parent_id;
+    const guard = new Set<string>();
+    while (cur) {
+      if (cur === selfId) return "Cannot make a subtopic the parent of its own parent";
+      if (guard.has(cur)) break;
+      guard.add(cur);
+      const up = await queryOne<{ parent_id: string | null }>("SELECT parent_id FROM topics WHERE id = $1", [cur]);
+      cur = up?.parent_id ?? null;
+    }
+  }
+  return null;
 }
 
 export async function createTopic(prev: unknown, formData: FormData): Promise<ActionResult> {
@@ -140,15 +180,18 @@ export async function createTopic(prev: unknown, formData: FormData): Promise<Ac
   const examId = str(formData.get("examId"));
   const name = str(formData.get("name"));
   if (!examId || !name) return { ok: false, error: "Topic name is required" };
-  const owned = await queryOne("SELECT id FROM exams WHERE id = $1 AND user_id = $2", [examId, user.id]);
+  const owned = await queryOne(`SELECT id FROM exams WHERE id = $1 AND ${scoped(user, "user_id", 2)}`, [examId, user.id]);
   if (!owned) return { ok: false, error: "Exam not found" };
+  const parentId = str(formData.get("parentId")) || null;
+  const parentErr = await topicParentError(examId, parentId);
+  if (parentErr) return { ok: false, error: parentErr };
   const weightage = Math.min(100, Math.max(0, Math.round(toInt(formData.get("weightage")))));
   const description = str(formData.get("description"));
   const [r] = await query<{ m: string }>("SELECT COALESCE(max(sort_order), -1)::text AS m FROM topics WHERE exam_id = $1", [examId]);
   const nextOrder = Number(r?.m ?? -1) + 1;
   await query(
-    `INSERT INTO topics (exam_id, name, weightage, description, sort_order) VALUES ($1, $2, $3, $4, $5)`,
-    [examId, name, weightage, description || null, nextOrder]
+    `INSERT INTO topics (exam_id, name, weightage, description, sort_order, parent_id) VALUES ($1, $2, $3, $4, $5, $6)`,
+    [examId, name, weightage, description || null, nextOrder, parentId]
   );
   revalidatePath(`/exams/${examId}`);
   revalidatePath("/exams");
@@ -163,11 +206,20 @@ export async function updateTopic(prev: unknown, formData: FormData): Promise<Ac
   const weightage = Math.min(100, Math.max(0, Math.round(toInt(formData.get("weightage")))));
   const description = str(formData.get("description"));
   if (!id || !name) return { ok: false, error: "Missing fields" };
+  const existing = await queryOne<{ exam_id: string }>(
+    `SELECT t.exam_id, t.parent_id FROM topics t
+     WHERE t.id = $1 AND t.exam_id IN (SELECT id FROM exams WHERE ${scoped(user, "user_id", 2)})`,
+    [id, user.id]
+  );
+  if (!existing) return { ok: false, error: "Topic not found" };
+  const parentId = str(formData.get("parentId")) || null;
+  const parentErr = await topicParentError(existing.exam_id, parentId, id);
+  if (parentErr) return { ok: false, error: parentErr };
   const t = await queryOne<{ exam_id: string }>(
-    `UPDATE topics SET name = $1, weightage = $2, description = $3
-     WHERE id = $4 AND exam_id IN (SELECT id FROM exams WHERE user_id = $5)
+    `UPDATE topics SET name = $1, weightage = $2, description = $3, parent_id = $4
+     WHERE id = $5 AND exam_id IN (SELECT id FROM exams WHERE ${scoped(user, "user_id", 6)})
      RETURNING exam_id`,
-    [name, weightage, description || null, id, user.id]
+    [name, weightage, description || null, parentId, id, user.id]
   );
   if (!t) return { ok: false, error: "Topic not found" };
   revalidatePath(`/exams/${t.exam_id}`);
@@ -188,77 +240,245 @@ export async function deleteTopic(id: string): Promise<ActionResult> {
 
 // ---------------------------------------------------------------- materials
 
-export async function addMaterial(prev: unknown, formData: FormData): Promise<ActionResult> {
+export async function createKnowledgeBase(prev: unknown, formData: FormData): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
-  const examId = str(formData.get("examId")) || null;
-  const kind = str(formData.get("kind")); // text | url | file
-  const title = str(formData.get("title"));
-  const url = str(formData.get("url"));
-  const text = str(formData.get("text"));
-  const file = formData.get("file");
+  const name = str(formData.get("name"));
+  if (!name) return { ok: false, error: "A name is required" };
+  const description = str(formData.get("description")) || null;
+  const kb = await queryOne<{ id: string }>(
+    "INSERT INTO knowledge_bases (user_id, name, description) VALUES ($1, $2, $3) RETURNING id",
+    [user.id, name, description]
+  );
+  revalidatePath("/materials");
+  return kb ? { ok: true, id: kb.id } : { ok: false, error: "Could not create knowledge base" };
+}
 
-  let content = "";
-  let source: string | null = null;
-  let type = "TEXT";
-  let autoTitle = title;
+export async function deleteKnowledgeBase(id: string, opts?: { keepMaterials?: boolean }): Promise<ActionResult> {
+  const user = await requireUser().catch(() => null);
+  if (!user) return guard();
+  const owned = await queryOne(`SELECT id FROM knowledge_bases WHERE id = $1 AND ${scoped(user, "user_id", 2)}`, [id, user.id]);
+  if (!owned) return { ok: false, error: "Knowledge base not found" };
+  if (!opts?.keepMaterials) {
+    await query("DELETE FROM materials WHERE knowledge_base_id = $1", [id]);
+  }
+  await query("DELETE FROM knowledge_bases WHERE id = $1", [id]);
+  revalidatePath("/materials");
+  return { ok: true };
+}
 
-  try {
-    if (kind === "url" && url) {
-      type = "URL";
-      source = url;
-      const r = await extractTextFromUrl(url);
-      content = r.text;
-      autoTitle = title || r.title;
-    } else if (kind === "file" && file instanceof File) {
-      if (file.size > MAX_FILE_BYTES) {
-        return { ok: false, error: "File is too large (max 15MB)" };
+/** Inserts one material (multi-file uploads call this per doc) and indexes it for RAG. */
+async function storeMaterial(
+  user: { id: string },
+  args: {
+    examId: string | null;
+    knowledgeBaseId: string | null;
+    title: string;
+    type: string;
+    source: string | null;
+    content: string;
+  }
+): Promise<{ ok: boolean; error?: string; status?: "added" | "unchanged" | "updated" }> {
+  // Re-uploading a folder must not leave a second copy of every file behind, so
+  // a file already imported from the same path is refreshed instead of inserted.
+  if (args.source) {
+    const existing = await queryOne<{ id: string; content: string }>(
+      `SELECT id, content FROM materials WHERE user_id = $1 AND source = $2 LIMIT 1`,
+      [user.id, args.source]
+    );
+    if (existing) {
+      if (existing.content === args.content) return { ok: true, status: "unchanged" };
+      await query(
+        `UPDATE materials SET title = $1, content = $2, exam_id = $3, knowledge_base_id = $4
+         WHERE id = $5`,
+        [args.title, args.content, args.examId, args.knowledgeBaseId, existing.id]
+      );
+      try {
+        await reindexMaterial(user.id, existing.id, args.content);
+      } catch {
+        // embeddings are optional; RAG will just be less effective
       }
-      type = "FILE";
-      source = file.name;
-      const buf = Buffer.from(await file.arrayBuffer());
-      content = await extractTextFromFile(buf, file.name);
-      autoTitle = title || file.name.replace(/\.[^.]+$/, "");
-    } else {
-      content = text;
-      autoTitle = title || "Pasted notes";
+      return { ok: true, status: "updated" };
     }
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
-
-  if (content.trim().length < 30) {
-    return { ok: false, error: "Not enough content extracted — add more text or a different file/URL" };
-  }
-
-  let examIdFinal: string | null = examId;
-  if (examId) {
-    const owned = await queryOne("SELECT id FROM exams WHERE id = $1 AND user_id = $2", [examId, user.id]);
-    if (!owned) examIdFinal = null;
   }
 
   const material = await queryOne<{ id: string }>(
-    `INSERT INTO materials (user_id, exam_id, title, type, source, content)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-    [user.id, examIdFinal, autoTitle, type, source, content]
+    `INSERT INTO materials (user_id, exam_id, knowledge_base_id, title, type, source, content)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+    [user.id, args.examId, args.knowledgeBaseId, args.title, args.type, args.source, args.content]
   );
   if (!material) return { ok: false, error: "Could not store material" };
-
   try {
-    await embedAndStoreChunks(material.id, content);
+    await embedAndStoreChunks(user.id, material.id, args.content);
   } catch {
     // embeddings are optional; RAG will just be less effective
+  }
+  return { ok: true, status: "added" };
+}
+
+export async function addMaterials(prev: unknown, formData: FormData): Promise<ActionResult> {
+  const user = await requireUser().catch(() => null);
+  if (!user) return guard();
+  const examId = str(formData.get("examId")) || null;
+  let knowledgeBaseId = str(formData.get("knowledgeBaseId")) || null;
+  const kind = str(formData.get("kind")); // text | url | file
+  const titleInput = str(formData.get("title"));
+
+  let examIdFinal: string | null = examId;
+  if (examId) {
+    const owned = await queryOne(`SELECT id FROM exams WHERE id = $1 AND ${scoped(user, "user_id", 2)}`, [examId, user.id]);
+    if (!owned) examIdFinal = null;
+  }
+  if (knowledgeBaseId) {
+    const owned = await queryOne(`SELECT id FROM knowledge_bases WHERE id = $1 AND ${scoped(user, "user_id", 2)}`, [knowledgeBaseId, user.id]);
+    if (!owned) knowledgeBaseId = null;
+  }
+
+  let created = 0;
+  let alreadyThere = 0;
+  const errors: string[] = [];
+
+  if (kind === "file") {
+    const files = formData.getAll("files").filter((f): f is File => f instanceof File && f.size > 0);
+    if (files.length === 0) return { ok: false, error: "Choose at least one file or folder" };
+
+    // `webkitRelativePath` is a client-only property and never survives the
+    // FormData round trip, so the browser sends the paths alongside the files
+    // and they are matched back up by position here.
+    let paths: string[] = [];
+    try {
+      const parsed: unknown = JSON.parse(str(formData.get("paths")) || "[]");
+      if (Array.isArray(parsed)) paths = parsed.map((p) => String(p));
+    } catch {
+      paths = [];
+    }
+    const pathFor = (file: File, index: number): string => paths[index] || file.name;
+
+    if (files.length > MAX_UPLOAD_FILES) {
+      return {
+        ok: false,
+        error: `That is ${files.length} files — the limit is ${MAX_UPLOAD_FILES}. Upload the folder in smaller batches.`,
+      };
+    }
+    const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
+    if (totalBytes > MAX_UPLOAD_TOTAL_BYTES) {
+      return {
+        ok: false,
+        error: `That selection is ${(totalBytes / 1024 / 1024).toFixed(0)}MB — the limit is ${MAX_UPLOAD_TOTAL_BYTES / 1024 / 1024}MB per upload.`,
+      };
+    }
+
+    for (const [index, file] of files.entries()) {
+      const path = pathFor(file, index);
+      const verdict = classifyUpload(path);
+      if (!verdict.ok) {
+        errors.push(`Skipped "${path}" (${verdict.reason})`);
+        continue;
+      }
+      if (file.size > MAX_FILE_BYTES) {
+        errors.push(`Skipped "${path}" (over 15MB)`);
+        continue;
+      }
+      let content: string;
+      try {
+        const buf = Buffer.from(await file.arrayBuffer());
+        content = await extractTextFromFile(buf, path);
+      } catch (err) {
+        errors.push(`Skipped "${path}" (${err instanceof Error ? err.message : "could not read"})`);
+        continue;
+      }
+      if (content.trim().length < 30) {
+        errors.push(`Skipped "${path}" (no readable text)`);
+        continue;
+      }
+      // Folder uploads keep their folder structure so two files with the same
+      // name in different chapters stay distinguishable in the bank.
+      const title = titleFromPath(path) || titleInput;
+      const res = await storeMaterial(user, {
+        examId: examIdFinal ?? null,
+        knowledgeBaseId,
+        title,
+        type: "FILE",
+        source: path,
+        content,
+      });
+      if (res.ok) {
+        if (res.status === "added") created++;
+        else if (res.status === "unchanged") alreadyThere++;
+      } else if (res.error) {
+        errors.push(res.error);
+      }
+    }
+    if (created === 0 && alreadyThere === 0 && errors.length > 0) {
+      return { ok: false, error: `Nothing was added. ${errors.slice(0, 6).join("; ")}` };
+    }
+  } else if (kind === "url") {
+    const url = str(formData.get("url"));
+    if (!url) return { ok: false, error: "Website URL is required" };
+    let content = "";
+    let autoTitle = titleInput;
+    try {
+      const r = await extractTextFromUrl(url);
+      content = r.text;
+      autoTitle = titleInput || r.title;
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    if (content.trim().length < 30) return { ok: false, error: "Not enough content extracted from that URL" };
+    const res = await storeMaterial(user, { examId: examIdFinal ?? null, knowledgeBaseId, title: autoTitle, type: "URL", source: url, content });
+    if (res.ok) {
+      if (res.status === "unchanged") alreadyThere++;
+      else created++;
+    } else if (res.error) {
+      errors.push(res.error);
+    }
+  } else {
+    const text = str(formData.get("text"));
+    if (text.trim().length < 30) return { ok: false, error: "Pasted notes are too short — add more text" };
+    const res = await storeMaterial(user, {
+      examId: examIdFinal ?? null,
+      knowledgeBaseId,
+      title: titleInput || "Pasted notes",
+      type: "TEXT",
+      source: null,
+      content: text,
+    });
+    if (res.ok) {
+      if (res.status === "unchanged") alreadyThere++;
+      else created++;
+    } else if (res.error) {
+      errors.push(res.error);
+    }
   }
 
   revalidatePath("/materials");
   revalidatePath("/dashboard");
-  return { ok: true, id: material.id };
+  if (created === 0) {
+    return { ok: false, error: errors[0] ?? "Nothing was added — check the content/size limits" };
+  }
+  // A bare "9 skipped" is unactionable, so the reasons travel back with the
+  // result and are also logged, in case the page is closed before they are read.
+  if (errors.length > 0) {
+    console.warn(`[materials] ${errors.length} file(s) skipped:`, errors);
+    // The bare "N skipped" in the UI left no way to find out which files or why.
+    await recordEvent(user.id, "warn", "upload", `${errors.length} file(s) skipped during upload`, {
+      added: created,
+      skipped: errors.length,
+      files: errors.slice(0, 50).map((e) => (typeof e === "string" ? e : String(e))),
+    });
+  }
+  const notes = [` · ${errors.length} skipped`];
+  if (alreadyThere > 0) notes.push(` · ${alreadyThere} already imported`);
+  return {
+    ok: true,
+    data: { created, note: notes.join(""), skipped: errors, alreadyThere },
+  };
 }
 
 export async function deleteMaterial(id: string): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
-  const owned = await queryOne("SELECT id FROM materials WHERE id = $1 AND user_id = $2", [id, user.id]);
+  const owned = await queryOne(`SELECT id FROM materials WHERE id = $1 AND ${scoped(user, "user_id", 2)}`, [id, user.id]);
   if (!owned) return { ok: false, error: "Material not found" };
   await query("DELETE FROM materials WHERE id = $1", [id]);
   revalidatePath("/materials");
@@ -282,10 +502,17 @@ export async function addQuestion(prev: unknown, formData: FormData): Promise<Ac
   const explanation = str(formData.get("explanation"));
 
   if (type === "mcq") {
-    const options = [1, 2, 3, 4].map((i) => str(formData.get(`option${i}`)));
-    if (options.some((o) => !o)) return { ok: false, error: "All 4 options are required" };
+    // 4 or 5 options; a blank 5th is dropped, but a hole in the middle is an error.
+    const options = [1, 2, 3, 4, 5].map((i) => str(formData.get(`option${i}`)));
+    while (options.length > 0 && !options[options.length - 1]) options.pop();
+    if (options.length < 4) return { ok: false, error: "An MCQ needs at least 4 options" };
+    if (options.length > 5) return { ok: false, error: "An MCQ can have at most 5 options" };
+    if (options.some((o) => !o)) return { ok: false, error: "All options are required — no gaps allowed" };
+    if (new Set(options.map((o) => o.toLowerCase())).size !== options.length) {
+      return { ok: false, error: "Options must be different from each other" };
+    }
     const correctIdx = toInt(formData.get("correctIndex"));
-    if (correctIdx < 0 || correctIdx > 3) return { ok: false, error: "Pick the correct option" };
+    if (correctIdx < 0 || correctIdx >= options.length) return { ok: false, error: "Pick the correct option" };
     choices = options.map((text, idx) => ({ text, correct: idx === correctIdx }));
     answer = options[correctIdx];
   } else if (type === "true_false") {
@@ -312,10 +539,34 @@ export async function addQuestion(prev: unknown, formData: FormData): Promise<Ac
 export async function deleteQuestion(id: string): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
-  const owned = await queryOne("SELECT id FROM questions WHERE id = $1 AND user_id = $2", [id, user.id]);
+  const owned = await queryOne(`SELECT id FROM questions WHERE id = $1 AND ${scoped(user, "user_id", 2)}`, [id, user.id]);
   if (!owned) return { ok: false, error: "Question not found" };
   await query("DELETE FROM questions WHERE id = $1", [id]);
   revalidatePath("/question-bank");
+  return { ok: true };
+}
+
+/**
+ * Files a question under a different topic or subtopic.
+ *
+ * Automatic filing covers most questions, but a question about, say, storing an
+ * API key shares no vocabulary with any subtopic name, so it needs a human.
+ */
+export async function setQuestionTopic(questionId: string, topicId: string | null): Promise<ActionResult> {
+  const user = await requireUser().catch(() => null);
+  if (!user) return guard();
+  const owned = await queryOne<{ id: string }>(
+    `SELECT id FROM questions WHERE id = $1 AND ${scoped(user, "user_id", 2)}`,
+    [questionId, user.id]
+  );
+  if (!owned) return { ok: false, error: "Question not found" };
+  if (topicId) {
+    const topic = await queryOne<{ id: string }>("SELECT id FROM topics WHERE id = $1", [topicId]);
+    if (!topic) return { ok: false, error: "That topic no longer exists" };
+  }
+  await query("UPDATE questions SET topic_id = $1 WHERE id = $2", [topicId, questionId]);
+  revalidatePath("/question-bank");
+  revalidatePath("/exams");
   return { ok: true };
 }
 
@@ -323,26 +574,67 @@ export async function deleteQuestion(id: string): Promise<ActionResult> {
 
 export async function generateQuestions(input: {
   examId: string | null;
+  knowledgeBaseId?: string | null;
   topicIds: string[];
+  materialId?: string | null;
   type: string;
   count: number;
 }): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
-  const count = Math.min(20, Math.max(1, Math.round(input.count || 5)));
+  const count = Math.min(MAX_GEN, Math.max(1, Math.round(input.count || 10)));
   if (!["mcq", "true_false", "short"].includes(input.type)) {
     return { ok: false, error: "Pick mcq, true/false or short answer" };
   }
   try {
-    const rows = await generateFromAI({
-      userId: user.id,
+    let kbId = input.knowledgeBaseId || null;
+    let contextUserId = user.id;
+    if (kbId) {
+      const kb = await queryOne<{ id: string; user_id: string }>(
+        `SELECT id, user_id FROM knowledge_bases WHERE id = $1 AND ${scoped(user, "user_id", 2)}`,
+        [kbId, user.id]
+      );
+      if (!kb) kbId = null;
+      // Admin may generate from another user's knowledge base — read their
+      // material but still save the results to the admin's own workspace.
+      else if (kb.user_id !== user.id) contextUserId = kb.user_id;
+    }
+    let created = 0;
+    const shortfall: { reason: string | null } = { reason: null };
+    await generateFromAI({
+      userId: contextUserId,
       examId: input.examId,
+      knowledgeBaseId: kbId,
       topicIds: input.topicIds,
+      materialId: input.materialId,
+      forceTopicId: input.topicIds.length === 1 ? input.topicIds[0] : null,
       type: input.type as "mcq" | "true_false" | "short",
       count,
+      onBatch: async (batch) => {
+        created += await persistGeneratedQuestions(user.id, input.examId, batch);
+      },
+      onShortfall: (info) => {
+        shortfall.reason = info.reason;
+      },
     });
-    if (rows.length === 0) return { ok: false, error: "AI generated no questions — try again" };
-    const created = await persistGeneratedQuestions(user.id, input.examId, rows);
+    if (created === 0) return { ok: false, error: "AI generated no questions — try again" };
+    // Asking for 50 and silently getting 4 is worse than saying so: on this
+    // hardware each question takes about a minute, and a weak model burns whole
+    // batches re-asking things it already produced.
+    if (created < count) {
+      const why =
+        shortfall.reason === "budget"
+          ? `it hit the time budget for ${count} questions on this machine`
+          : shortfall.reason === "barren"
+            ? "the model kept repeating itself"
+            : "the model stopped producing usable questions";
+      console.warn(`[generateQuestions] asked for ${count}, created ${created}: ${why}`);
+      return {
+        ok: true,
+        data: { created },
+        warning: `Created ${created} of ${count} — ${why}. Everything produced was saved. Try a smaller batch, or a faster model.`,
+      };
+    }
     revalidatePath("/question-bank");
     revalidatePath("/dashboard");
     return { ok: true, data: { created } };
@@ -354,30 +646,49 @@ export async function generateQuestions(input: {
 
 export async function generateFlashcards(input: {
   examId: string | null;
+  knowledgeBaseId?: string | null;
   topicIds: string[];
+  materialId?: string | null;
   count: number;
 }): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
-  const count = Math.min(30, Math.max(1, Math.round(input.count || 10)));
+  const count = Math.min(MAX_GEN, Math.max(1, Math.round(input.count || 10)));
   try {
-    const rows = await generateFromAI({
-      userId: user.id,
+    let kbId = input.knowledgeBaseId || null;
+    let contextUserId = user.id;
+    if (kbId) {
+      const kb = await queryOne<{ id: string; user_id: string }>(
+        `SELECT id, user_id FROM knowledge_bases WHERE id = $1 AND ${scoped(user, "user_id", 2)}`,
+        [kbId, user.id]
+      );
+      if (!kb) kbId = null;
+      else if (kb.user_id !== user.id) contextUserId = kb.user_id;
+    }
+    let created = 0;
+    await generateFromAI({
+      userId: contextUserId,
       examId: input.examId,
+      knowledgeBaseId: kbId,
       topicIds: input.topicIds,
+      materialId: input.materialId,
+      forceTopicId: input.topicIds.length === 1 ? input.topicIds[0] : null,
       type: "flashcard",
       count,
+      onBatch: async (batch) => {
+        for (const r of batch) {
+          await query(
+            `INSERT INTO flashcards (user_id, exam_id, topic_id, front, back, source)
+             VALUES ($1, $2, $3, $4, $5, 'ai')`,
+            [user.id, input.examId, r.topicId, r.prompt, r.answer]
+          );
+          created++;
+        }
+      },
     });
-    if (rows.length === 0) return { ok: false, error: "AI generated no flashcards — try again" };
-    for (const r of rows) {
-      await query(
-        `INSERT INTO flashcards (user_id, exam_id, topic_id, front, back, source)
-         VALUES ($1, $2, $3, $4, $5, 'ai')`,
-        [user.id, input.examId, r.topicId, r.prompt, r.answer]
-      );
-    }
+    if (created === 0) return { ok: false, error: "AI generated no flashcards — try again" };
     revalidatePath("/flashcards");
-    return { ok: true, data: { created: rows.length } };
+    return { ok: true, data: { created } };
   } catch (err) {
     if (err instanceof AIError) return { ok: false, error: err.message };
     return { ok: false, error: err instanceof Error ? err.message : "Generation failed" };
@@ -406,7 +717,7 @@ export async function addFlashcard(input: {
 export async function deleteFlashcard(id: string): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
-  const owned = await queryOne("SELECT id FROM flashcards WHERE id = $1 AND user_id = $2", [id, user.id]);
+  const owned = await queryOne(`SELECT id FROM flashcards WHERE id = $1 AND ${scoped(user, "user_id", 2)}`, [id, user.id]);
   if (!owned) return { ok: false, error: "Card not found" };
   await query("DELETE FROM flashcards WHERE id = $1", [id]);
   revalidatePath("/flashcards");
@@ -420,7 +731,7 @@ export async function reviewFlashcard(id: string, correct: boolean): Promise<Act
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
   const card = await queryOne<{ id: string; box: number; reps: number; lapses: number }>(
-    "SELECT id, box, reps, lapses FROM flashcards WHERE id = $1 AND user_id = $2",
+    `SELECT id, box, reps, lapses FROM flashcards WHERE id = $1 AND ${scoped(user, "user_id", 2)}`,
     [id, user.id]
   );
   if (!card) return { ok: false, error: "Card not found" };
@@ -455,35 +766,16 @@ export type SubmittedAnswer = {
   selfCorrect?: boolean;
 };
 
-function gradeAnswer(question: QuizQuestion, a: SubmittedAnswer): { correct: boolean; got: number } {
-  if (question.type === "short") {
-    return { correct: a.selfCorrect ?? false, got: a.selfCorrect ? question.points : 0 };
-  }
-  const correct = question.choices?.find((c) => c.correct) ?? null;
-  if (!correct) return { correct: false, got: 0 };
-  if (question.type === "mcq") {
-    const chosenIdx = typeof a.chosen === "number" ? a.chosen : Number(a.chosen);
-    const chosen = question.choices?.[chosenIdx];
-    return { correct: chosen?.text === correct.text, got: chosen?.text === correct.text ? question.points : 0 };
-  }
-  if (question.type === "true_false") {
-    const chosenBool = a.chosen === true || a.chosen === "true";
-    const correctBool = correct.text.toLowerCase() === "true";
-    return { correct: chosenBool === correctBool, got: chosenBool === correctBool ? question.points : 0 };
-  }
-  return { correct: false, got: 0 };
-}
-
 async function buildQuestionPool(
-  userId: string,
+  user: SessionUser,
   examId: string | null
 ): Promise<QuizQuestion[]> {
   const rows = await query<QuizQuestion & { choices: QuizQuestion["choices"] }>(
     `SELECT id, type, category, prompt, choices, answer, explanation, topic_id AS "topicId", points
      FROM questions
-     WHERE user_id = $1 AND ($2::uuid IS NULL OR exam_id = $2) AND type IN ('mcq','true_false','short')
+     WHERE ${scoped(user, "user_id")} AND ($2::uuid IS NULL OR exam_id = $2) AND type IN ('mcq','true_false','short')
      ORDER BY random()`,
-    [userId, examId]
+    [user.id, examId]
   );
   return rows;
 }
@@ -502,13 +794,13 @@ export async function createQuiz(input: {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
   if (input.examId) {
-    const owned = await queryOne("SELECT id FROM exams WHERE id = $1 AND user_id = $2", [input.examId, user.id]);
+    const owned = await queryOne(`SELECT id FROM exams WHERE id = $1 AND ${scoped(user, "user_id", 2)}`, [input.examId, user.id]);
     if (!owned) return { ok: false, error: "Exam not found" };
   }
   const mode = input.mode ?? "quiz";
   const count = Math.min(60, Math.max(1, Math.round(input.count || 10)));
 
-  const pool = await buildQuestionPool(user.id, input.examId);
+  const pool = await buildQuestionPool(user, input.examId);
   let filtered = pool;
   if (input.topicId) filtered = pool.filter((q) => q.topicId === input.topicId);
   const requestedTypes = input.types ?? [];
@@ -571,7 +863,7 @@ export async function submitQuiz(sessionId: string, answers: SubmittedAnswer[]):
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
   const session = await queryOne<{ id: string; questions: unknown; started_at: Date }>(
-    "SELECT id, questions, started_at FROM quiz_sessions WHERE id = $1 AND user_id = $2 AND completed_at IS NULL",
+    `SELECT id, questions, started_at FROM quiz_sessions WHERE id = $1 AND ${scoped(user, "user_id", 2)} AND completed_at IS NULL`,
     [sessionId, user.id]
   );
   if (!session) return { ok: false, error: "Session not found or already completed" };
@@ -612,11 +904,68 @@ export async function submitQuiz(sessionId: string, answers: SubmittedAnswer[]):
   return { ok: true, id: sessionId };
 }
 
+export type AnswerCheck = {
+  correct: boolean;
+  got: number;
+  points: number;
+  /** Index of the correct option for mcq, null for other types. */
+  correctIndex: number | null;
+  /** "true" | "false" for true_false, otherwise the correct option text. */
+  correctValue: string | null;
+  explanation: string | null;
+};
+
+/**
+ * Grades a single in-progress answer against the unsanitized question snapshot so
+ * the client can show instant feedback. Read-only: final scoring still happens
+ * in submitQuiz, so checking an answer never changes the score.
+ */
+export async function checkAnswer(
+  sessionId: string,
+  questionId: string,
+  chosen: SubmittedAnswer["chosen"]
+): Promise<ActionResult> {
+  const user = await requireUser().catch(() => null);
+  if (!user) return guard();
+  const session = await queryOne<{ questions: unknown }>(
+    `SELECT questions FROM quiz_sessions
+     WHERE id = $1 AND ${scoped(user, "user_id", 2)} AND completed_at IS NULL`,
+    [sessionId, user.id]
+  );
+  if (!session) return { ok: false, error: "Session not found or already completed" };
+
+  const question = parseQuestions(session.questions).find((q) => q.id === questionId);
+  if (!question) return { ok: false, error: "Question is not part of this session" };
+  if (question.type === "short") {
+    return { ok: false, error: "Short answers are graded by you on the results page" };
+  }
+  if (question.choices?.find((c) => c.correct) === undefined) {
+    return { ok: false, error: "This question has no answer key" };
+  }
+
+  const { correct, got } = gradeAnswer(question, { chosen });
+  const correctIndex = question.choices.findIndex((c) => c.correct);
+  const correctText = correctIndex >= 0 ? (question.choices[correctIndex]?.text ?? null) : null;
+
+  const data: AnswerCheck = {
+    correct,
+    got,
+    points: question.points,
+    correctIndex: question.type === "mcq" && correctIndex >= 0 ? correctIndex : null,
+    correctValue:
+      question.type === "true_false"
+        ? (correctText?.toLowerCase() === "true" ? "true" : "false")
+        : correctText,
+    explanation: question.explanation ?? null,
+  };
+  return { ok: true, data };
+}
+
 export async function selfGradeAnswer(sessionId: string, questionId: string, correctValue: boolean): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
   const session = await queryOne<{ id: string; answers: unknown }>(
-    "SELECT id, answers FROM quiz_sessions WHERE id = $1 AND user_id = $2",
+    `SELECT id, answers FROM quiz_sessions WHERE id = $1 AND ${scoped(user, "user_id", 2)}`,
     [sessionId, user.id]
   );
   if (!session) return { ok: false, error: "Session not found" };
@@ -640,7 +989,7 @@ export async function createMock(input: { examId: string; count: number }): Prom
   if (!user) return guard();
   const count = Math.min(50, Math.max(5, Math.round(input.count || 20)));
   const exam = await queryOne<{ id: string; title: string }>(
-    "SELECT id, title FROM exams WHERE id = $1 AND user_id = $2",
+    `SELECT id, title FROM exams WHERE id = $1 AND ${scoped(user, "user_id", 2)}`,
     [input.examId, user.id]
   );
   if (!exam) return { ok: false, error: "Exam not found" };
@@ -651,7 +1000,7 @@ export async function createMock(input: { examId: string; count: number }): Prom
   );
   const totalWeight = topics.reduce((s, t) => s + t.weightage, 0) || 1;
 
-  const pool = await buildQuestionPool(user.id, input.examId);
+  const pool = await buildQuestionPool(user, input.examId);
   const selected: QuizQuestion[] = [];
   const used = new Set<string>();
 
@@ -734,7 +1083,7 @@ export async function startInterview(input: {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
   const count = Math.min(10, Math.max(1, Math.round(input.count || 5)));
-  const available = await isAiAvailable();
+  const available = await isAiAvailable(user.id);
   if (!available) {
     return { ok: false, error: "AI service is not reachable. Start Ollama or configure AI_BASE_URL." };
   }
@@ -775,7 +1124,7 @@ export async function submitInterview(sessionId: string, answers: SubmittedAnswe
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
   const session = await queryOne<{ id: string; questions: unknown; created_at: Date }>(
-    "SELECT id, questions, created_at FROM quiz_sessions WHERE id = $1 AND user_id = $2 AND mode = 'interview' AND completed_at IS NULL",
+    `SELECT id, questions, created_at FROM quiz_sessions WHERE id = $1 AND ${scoped(user, "user_id", 2)} AND mode = 'interview' AND completed_at IS NULL`,
     [sessionId, user.id]
   );
   if (!session) return { ok: false, error: "Interview session not found" };
@@ -794,7 +1143,7 @@ export async function submitInterview(sessionId: string, answers: SubmittedAnswe
           modelAnswer: q.answer ?? undefined,
           userAnswer: text.slice(0, 4000),
         });
-        feedback = await chatJson<InterviewFeedback>(system, userPrompt, { maxTokens: 1200 });
+        feedback = await chatJson<InterviewFeedback>(user.id, system, userPrompt, { maxTokens: 1200 });
       } catch {
         feedback = null;
       }
@@ -845,4 +1194,159 @@ export async function logStudy(seconds: number): Promise<ActionResult> {
 export async function aiStatus(): Promise<ActionResult> {
   const boat = await isAiAvailable();
   return boat ? { ok: true, data: { available: true } } : { ok: true, data: { available: false } };
+}
+
+// ---------------------------------------------------------------- settings
+
+const MAX_FIELD = 500;
+
+function clampField(v: string): string {
+  return v.slice(0, MAX_FIELD);
+}
+
+/** Saves the user's AI provider config (OpenAI API-key based or local model). */
+export async function saveSettings(prev: unknown, formData: FormData): Promise<ActionResult> {
+  const user = await requireUser().catch(() => null);
+  if (!user) return guard();
+  const provider: AIProvider = str(formData.get("provider")) === "openai" ? "openai" : "local";
+  const baseUrl = clampField(str(formData.get("baseUrl"))) || null;
+  let apiKey = clampField(str(formData.get("apiKey"))) || null;
+  const model = clampField(str(formData.get("chatModel"))) || null;
+  const embeddingModel = clampField(str(formData.get("embeddingModel"))) || null;
+  const assistantEnabled = formData.get("assistantEnabled") === "on";
+
+  // Keep the existing key when the field is left blank (masked placeholder).
+  if (!apiKey) {
+    const existing = await queryOne<{ ai_api_key: string | null }>(
+      "SELECT ai_api_key FROM user_settings WHERE user_id = $1",
+      [user.id]
+    );
+    apiKey = existing?.ai_api_key || null;
+  }
+
+  await query(
+    `INSERT INTO user_settings (user_id, ai_provider, ai_base_url, ai_api_key, ai_model, ai_embedding_model, assistant_enabled)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (user_id) DO UPDATE SET
+       ai_provider = EXCLUDED.ai_provider,
+       ai_base_url = EXCLUDED.ai_base_url,
+       ai_api_key = EXCLUDED.ai_api_key,
+       ai_model = EXCLUDED.ai_model,
+       ai_embedding_model = EXCLUDED.ai_embedding_model,
+       assistant_enabled = EXCLUDED.assistant_enabled,
+       updated_at = now()`,
+    [user.id, provider, baseUrl, apiKey, model, embeddingModel, assistantEnabled]
+  );
+  revalidatePath("/settings");
+  revalidatePath("/assistant");
+  return { ok: true };
+}
+
+/** Tests connectivity using the values typed into the settings form (without saving). */
+export async function testAiConnection(prev: unknown, formData: FormData): Promise<ActionResult> {
+  const user = await requireUser().catch(() => null);
+  if (!user) return guard();
+  const provider: AIProvider = str(formData.get("provider")) === "openai" ? "openai" : "local";
+  const baseUrl = (clampField(str(formData.get("baseUrl"))) || (provider === "openai" ? "https://api.openai.com/v1" : "http://localhost:11434/v1")).replace(/\/+$/, "");
+  let apiKey = clampField(str(formData.get("apiKey")));
+  if (!apiKey) {
+    const existing = await queryOne<{ ai_api_key: string | null }>(
+      "SELECT ai_api_key FROM user_settings WHERE user_id = $1",
+      [user.id]
+    );
+    apiKey = existing?.ai_api_key ?? "";
+  }
+  const cfg: AIConfig = {
+    provider,
+    baseUrl,
+    apiKey: apiKey || "ollama",
+    model: clampField(str(formData.get("chatModel"))) || (provider === "openai" ? "gpt-4o-mini" : "llama3.2"),
+    embeddingModel: clampField(str(formData.get("embeddingModel"))) || (provider === "openai" ? "text-embedding-3-small" : "nomic-embed-text"),
+  };
+  const result = await testAiConfig(cfg);
+  await recordEvent(
+    user.id,
+    result.ok ? "info" : "error",
+    "ai-config",
+    result.ok ? `Connection to ${cfg.model} succeeded` : `Connection to ${cfg.model} failed: ${result.detail}`,
+    { provider, baseUrl: cfg.baseUrl, model: cfg.model, embeddingModel: cfg.embeddingModel, detail: result.detail }
+  );
+  return result.ok
+    ? { ok: true, data: { detail: result.detail } }
+    : { ok: false, error: result.detail };
+}
+
+// ---------------------------------------------------------------- study assistant
+
+/** Sends a message to the study assistant. Uses hybrid RAG (RRF) context + the user's provider config. */
+export async function sendChatMessage(prev: unknown, formData: FormData): Promise<ChatActionResult> {
+  const user = await requireUser().catch(() => null);
+  if (!user) return { ok: false, error: "Not authenticated" };
+  const message = str(formData.get("message"));
+  if (!message) return { ok: false, error: "Message is empty" };
+  if (message.length > 8000) return { ok: false, error: "Message is too long (max 8000 characters)" };
+
+  const settings = await getUserSettings(user.id);
+  if (settings && !settings.assistantEnabled) {
+    return { ok: false, error: "The AI assistant is disabled — enable it in Settings → Assistant." };
+  }
+
+  try {
+    const sessionId = await ensureChatSession(user.id);
+    const history = await query<{ role: string; content: string }>(
+      `SELECT role, content FROM chat_messages WHERE session_id = $1 ORDER BY created_at ASC LIMIT 40`,
+      [sessionId]
+    );
+
+    // Hybrid retrieval fused with Reciprocal Rank Fusion
+    const retrieved = await ragSearch(user.id, message, { limit: 6 });
+    const ctx = retrieved.map((r, i) => ({ index: i + 1, title: r.title, content: r.content }));
+
+    const messages: AIChatMessage[] = [
+      { role: "system", content: assistantSystemPrompt(ctx) },
+      ...history.map((h) => ({ role: h.role as "user" | "assistant", content: h.content })),
+      { role: "user", content: message },
+    ];
+    const reply = await chatCompletion(user.id, messages, { maxTokens: 1500, temperature: 0.4 });
+
+    const sources: ChatSource[] = retrieved.map((r) => ({
+      title: r.title,
+      materialId: r.materialId,
+      snippet: r.content.slice(0, 180),
+    }));
+
+    await query(
+      "INSERT INTO chat_messages (session_id, role, content, sources) VALUES ($1, 'user', $2, '[]'::jsonb)",
+      [sessionId, message]
+    );
+    await query(
+      "INSERT INTO chat_messages (session_id, role, content, sources) VALUES ($1, 'assistant', $2, $3::jsonb)",
+      [sessionId, reply, JSON.stringify(sources)]
+    );
+    await query("UPDATE chat_sessions SET updated_at = now() WHERE id = $1", [sessionId]);
+
+    revalidatePath("/assistant");
+    return { ok: true, userMessage: message, reply, sources };
+  } catch (err) {
+    if (err instanceof AIError) return { ok: false, error: err.message };
+    return { ok: false, error: err instanceof Error ? err.message : "The assistant could not respond" };
+  }
+}
+
+/** Deletes the user's whole assistant conversation. */
+export async function clearAssistantChat(): Promise<ActionResult> {
+  const user = await requireUser().catch(() => null);
+  if (!user) return guard();
+  await query("DELETE FROM chat_sessions WHERE user_id = $1", [user.id]);
+  revalidatePath("/assistant");
+  return { ok: true };
+}
+/** Empties the in-app diagnostics log shown under Settings. */
+export async function clearDiagnostics(): Promise<ActionResult> {
+  const user = await requireUser().catch(() => null);
+  if (!user) return guard();
+  const { clearEvents } = await import("@/lib/diagnostics");
+  await clearEvents(user.id);
+  revalidatePath("/settings");
+  return { ok: true, data: { detail: "Diagnostics log cleared." } };
 }

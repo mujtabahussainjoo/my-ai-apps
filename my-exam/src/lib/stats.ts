@@ -1,8 +1,14 @@
 import { query } from "@/lib/db";
+import { getCurrentUser, scoped } from "@/lib/auth";
 
 export type DayStat = { date: string; quizCount: number; studyMins: number; accuracy: number | null };
 
 export async function getStats(userId: string) {
+  const me = await getCurrentUser();
+  const user = me ?? { id: userId, role: "user" as const };
+  // Admins get platform-wide totals; everyone else only their own rows.
+  const w = scoped(user, "user_id");
+
   const [totals] = await query<{
     quizCount: string;
     mockCount: string;
@@ -13,20 +19,20 @@ export async function getStats(userId: string) {
     totalStudySec: string;
   }>(
     `SELECT
-       (SELECT count(*)::text FROM quiz_sessions WHERE user_id = $1 AND mode = 'quiz' AND completed_at IS NOT NULL) AS "quizCount",
-       (SELECT count(*)::text FROM quiz_sessions WHERE user_id = $1 AND mode = 'mock' AND completed_at IS NOT NULL) AS "mockCount",
-       (SELECT count(*)::text FROM questions WHERE user_id = $1) AS "questionCount",
-       (SELECT count(*)::text FROM flashcards WHERE user_id = $1) AS "flashcardCount",
-       (SELECT count(*)::text FROM materials WHERE user_id = $1) AS "materialCount",
-       (SELECT count(*)::text FROM exams WHERE user_id = $1) AS "examCount",
-       (SELECT COALESCE(sum(seconds)::text, '0') FROM study_sessions WHERE user_id = $1) AS "totalStudySec"`,
+       (SELECT count(*)::text FROM quiz_sessions WHERE ${w} AND mode = 'quiz' AND completed_at IS NOT NULL) AS "quizCount",
+       (SELECT count(*)::text FROM quiz_sessions WHERE ${w} AND mode = 'mock' AND completed_at IS NOT NULL) AS "mockCount",
+       (SELECT count(*)::text FROM questions WHERE ${w}) AS "questionCount",
+       (SELECT count(*)::text FROM flashcards WHERE ${w}) AS "flashcardCount",
+       (SELECT count(*)::text FROM materials WHERE ${w}) AS "materialCount",
+       (SELECT count(*)::text FROM exams WHERE ${w}) AS "examCount",
+       (SELECT COALESCE(sum(seconds)::text, '0') FROM study_sessions WHERE ${w}) AS "totalStudySec"`,
     [userId]
   );
 
   // Overall accuracy across completed quiz/mock sessions
   const [acc] = await query<{ score: string; total: string }>(
     `SELECT COALESCE(sum(score)::text, '0') AS score, COALESCE(sum(total)::text, '0') AS total
-     FROM quiz_sessions WHERE user_id = $1 AND completed_at IS NOT NULL AND mode IN ('quiz','mock')`,
+     FROM quiz_sessions WHERE ${w} AND completed_at IS NOT NULL AND mode IN ('quiz','mock')`,
     [userId]
   );
 
@@ -44,15 +50,15 @@ export async function getStats(userId: string) {
      SELECT ds.d::text AS d,
             COALESCE(sum(s.seconds), 0)::text AS sec,
             COALESCE((SELECT count(*) FROM quiz_sessions q
-                       WHERE q.user_id = $1 AND q.completed_at IS NOT NULL AND q.mode IN ('quiz','mock')
+                       WHERE ${scoped(user, "q.user_id")} AND q.completed_at IS NOT NULL AND q.mode IN ('quiz','mock')
                          AND q.completed_at::date = ds.d), 0)::text AS qc,
             COALESCE((SELECT sum(q.score) FROM quiz_sessions q
-                       WHERE q.user_id = $1 AND q.completed_at IS NOT NULL AND q.mode IN ('quiz','mock')
+                       WHERE ${scoped(user, "q.user_id")} AND q.completed_at IS NOT NULL AND q.mode IN ('quiz','mock')
                          AND q.completed_at::date = ds.d), 0)::text AS sc,
             COALESCE((SELECT sum(q.total) FROM quiz_sessions q
-                       WHERE q.user_id = $1 AND q.completed_at IS NOT NULL AND q.mode IN ('quiz','mock')
+                       WHERE ${scoped(user, "q.user_id")} AND q.completed_at IS NOT NULL AND q.mode IN ('quiz','mock')
                          AND q.completed_at::date = ds.d), 0)::text AS to
-     FROM ds LEFT JOIN study_sessions s ON s.user_id = $1 AND s.study_date = ds.d
+     FROM ds LEFT JOIN study_sessions s ON ${scoped(user, "s.user_id")} AND s.study_date = ds.d
      GROUP BY ds.d ORDER BY ds.d`,
     [userId]
   );
@@ -110,7 +116,7 @@ export async function getStats(userId: string) {
      CROSS JOIN LATERAL jsonb_array_elements(qs.answers) AS a(entry)
      LEFT JOIN topics t ON t.id = (a.entry->>'topicId')::uuid
      LEFT JOIN exams e ON e.id = qs.exam_id
-     WHERE qs.user_id = $1 AND qs.completed_at IS NOT NULL AND qs.mode IN ('quiz','mock')
+     WHERE ${scoped(user, "qs.user_id")} AND qs.completed_at IS NOT NULL AND qs.mode IN ('quiz','mock')
        AND qs.completed_at > now() - interval '90 days'
        AND a.entry->>'topicId' IS NOT NULL
      GROUP BY (a.entry->>'topicId')::uuid, t.name, e.title
@@ -130,7 +136,7 @@ export async function getStats(userId: string) {
   }>(
     `SELECT id, title, mode, score::text AS score, total::text AS total, completed_at AS "completedAt"
      FROM quiz_sessions
-     WHERE user_id = $1
+     WHERE ${scoped(user, "user_id")}
      ORDER BY created_at DESC LIMIT 6`,
     [userId]
   );
@@ -171,6 +177,8 @@ export async function getStats(userId: string) {
 }
 
 export async function getMasteryForExam(userId: string, examId: string) {
+  const me = await getCurrentUser();
+  const user = me ?? { id: userId, role: "user" as const };
   const rows = await query<{
     topicId: string;
     topic: string;
@@ -183,7 +191,7 @@ export async function getMasteryForExam(userId: string, examId: string) {
      FROM quiz_sessions qs
      CROSS JOIN LATERAL jsonb_array_elements(qs.answers) AS a(entry)
      JOIN topics t ON t.id = (a.entry->>'topicId')::uuid
-     WHERE qs.user_id = $1 AND qs.exam_id = $2 AND qs.completed_at IS NOT NULL
+     WHERE ${scoped(user, "qs.user_id")} AND qs.exam_id = $2 AND qs.completed_at IS NOT NULL
        AND a.entry->>'topicId' IS NOT NULL
      GROUP BY t.id, t.name
      ORDER BY t.sort_order`,

@@ -1,0 +1,14 @@
+# my-buddy-app is its own independent git repository
+# (remote: mujtabahussainjoo/ai.git). It lives here as a nested repo and must
+# never be tracked or absorbed by this parent repository. Keep it in its own
+# working tree / PRs.
+my-buddy-app/
+
+# Database dumps: contain live user rows and plaintext API keys. Never commit.
+my-exam/backups/
+*.sql
+*.sql.gz
+
+# Machine-local library shims resolved from /tmp; not portable.
+my-exam/*.so
+my-exam/*.so.*

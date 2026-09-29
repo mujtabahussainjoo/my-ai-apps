@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect, notFound } from "next/navigation";
 import { ArrowLeft, Tags, CircleHelp } from "lucide-react";
 import { getCurrentUser } from "@/lib/auth";
-import { getExam, listTopics, listMaterials, listQuestions } from "@/lib/data";
+import { getExam, listTopicTree, listMaterials, listQuestions, listKnowledgeBases, type TopicNode } from "@/lib/data";
 import { getMasteryForExam } from "@/lib/stats";
 import { Card, Badge, Progress } from "@/components/ui";
 import { WeightagePie, MasteryBars } from "@/components/charts";
@@ -19,12 +19,15 @@ export default async function ExamDetailPage({ params }: { params: Promise<{ id:
   const exam = await getExam(id);
   if (!exam) notFound();
 
-  const [topics, materials, questions, mastery] = await Promise.all([
-    listTopics(id),
-    listMaterials(id),
+  const [tree, materials, questions, mastery, knowledgeBases] = await Promise.all([
+    listTopicTree(id),
+    listMaterials({ examId: id }),
     listQuestions({ examId: id, limit: 1000 }),
     getMasteryForExam(user.id, id),
+    listKnowledgeBases(),
   ]);
+  const topics = flattenTree(tree);
+  const topLevel = tree;
 
   const pieData = topics.map((t, i) => ({ name: t.name, value: t.weightage, color: colorForIndex(i) }));
   const masteryData = mastery.map((m, i) => ({ ...m, color: colorForIndex(i) }));
@@ -87,22 +90,15 @@ export default async function ExamDetailPage({ params }: { params: Promise<{ id:
         <div>
           <h2 className="mb-3 text-lg font-semibold">Topics</h2>
           <div className="mb-4">
-            <AddTopicForm
-              examId={id}
-              onDone={() => {
-                /* router.refresh runs inside */
-              }}
-            />
+            <AddTopicForm examId={id} topics={topics} />
           </div>
           <div className="space-y-2">
             {topics.length === 0 && (
               <Card className="border-dashed text-sm text-foreground/55">
-                No topics yet. Add topics like “Networking”, “Security” or “Algorithms” with the % each appears on the exam.
+                No topics yet. Add a topic like “LLMs”, with subtopics under it like “How LLMs Behave” — give each a % weightage.
               </Card>
             )}
-            {topics.map((t) => (
-              <EditTopicRow key={t.id} id={t.id} examId={id} name={t.name} weightage={t.weightage} description={t.description} />
-            ))}
+            <TopicTree nodes={topLevel} examId={id} allTopics={topics} />
             {topics.length > 0 && (
               <div className="pt-1">
                 <div className="mb-1 flex justify-between text-xs text-foreground/55">
@@ -118,7 +114,7 @@ export default async function ExamDetailPage({ params }: { params: Promise<{ id:
         </div>
 
         <div className="space-y-6">
-          <ExamAIzAction examId={id} />
+          <ExamAIzAction examId={id} knowledgeBases={knowledgeBases} />
 
           <Card>
             <h3 className="mb-3 font-semibold">Your question bank</h3>
@@ -147,5 +143,75 @@ export default async function ExamDetailPage({ params }: { params: Promise<{ id:
         </div>
       </section>
     </div>
+  );
+}
+
+function flattenTree(nodes: TopicNode[]): TopicNode[] {
+  const out: TopicNode[] = [];
+  for (const n of nodes) {
+    out.push(n);
+    out.push(...flattenTree(n.children));
+  }
+  return out;
+}
+
+function TopicTree({
+  nodes,
+  examId,
+  allTopics,
+}: {
+  nodes: TopicNode[];
+  examId: string;
+  allTopics: TopicNode[];
+}) {
+  return (
+    <>
+      {nodes.map((t) => (
+        <div key={t.id} className="space-y-2">
+          <EditTopicRow
+            id={t.id}
+            examId={examId}
+            name={t.name}
+            weightage={t.weightage}
+            description={t.description}
+            parentId={t.parentId}
+            topics={allTopics}
+          />
+          {t.children.length > 0 && (
+            <div className="ml-6 space-y-2 border-l border-white/10 pl-3">
+              {t.children.map((c) => (
+                <div key={c.id} className="space-y-2">
+                  <EditTopicRow
+                    id={c.id}
+                    examId={examId}
+                    name={c.name}
+                    weightage={c.weightage}
+                    description={c.description}
+                    parentId={c.parentId}
+                    topics={allTopics}
+                  />
+                  {c.children.length > 0 && (
+                    <div className="ml-6 space-y-2 border-l border-white/10 pl-3">
+                      {c.children.map((gc) => (
+                        <EditTopicRow
+                          key={gc.id}
+                          id={gc.id}
+                          examId={examId}
+                          name={gc.name}
+                          weightage={gc.weightage}
+                          description={gc.description}
+                          parentId={gc.parentId}
+                          topics={allTopics}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+    </>
   );
 }

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Check, X, RotateCcw, CircleHelp, Loader2 } from "lucide-react";
 import { Button, Badge } from "@/components/ui";
+import { QuestionPrompt } from "@/components/question-prompt";
 import { selfGradeAnswer } from "@/lib/actions";
 import { QuizQuestion, AnswerEntry } from "@/lib/data";
 
@@ -90,7 +91,7 @@ export function ResultView({
                     <span className="tag">{q.type.replace("_", " ")}</span>
                     {q.category && <span className="tag">{q.category}</span>}
                   </div>
-                  <p className="prose-answer font-medium leading-relaxed">{q.prompt}</p>
+                  <QuestionPrompt text={q.prompt} />
 
                   {q.type === "mcq" && q.choices && (
                     <ul className="mt-3 space-y-1.5">

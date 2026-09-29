@@ -5,9 +5,8 @@
 my-buddy-app/
 
 # Database dumps: contain live user rows and plaintext API keys. Never commit.
+# (Schema source lives at my-exam/src/lib/schema.sql and stays tracked.)
 my-exam/backups/
-*.sql
-*.sql.gz
 
 # Machine-local library shims resolved from /tmp; not portable.
 my-exam/*.so

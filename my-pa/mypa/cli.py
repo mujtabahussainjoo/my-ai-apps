@@ -1,23 +1,26 @@
-"""myPA CLI — chat + web + config. Stdlib only (requests optional for live LLMs)."""
+"""Terminal interface for the local myPA agent."""
 from __future__ import annotations
 import argparse
 import sys
-import threading
+import subprocess
 import time
-from contextlib import contextmanager
 from . import __version__
 from .config import load, paths, public_config, update_global
-from .providers import chat
+from pathlib import Path
+from .terminal import Terminal, setup_readline
 
 
 def cmd_chat(args):
     cfg = load()
     if getattr(args, 'workspace', None):
-        from pathlib import Path
         workspace = Path(args.workspace).expanduser().resolve()
         if not workspace.is_dir(): raise ValueError('Workspace must be an existing directory')
         cfg['agent']['workspace'] = str(workspace)
-    print(f"myPA v{__version__}  model={cfg.get('default_model')}  (type /exit)")
+    cfg['agent']['workspace'] = str(Path(cfg['agent']['workspace']).expanduser().resolve())
+    ui = Terminal()
+    ui.banner(cfg, __version__)
+    setup_readline()
+    last_result = {}
     hist: list[dict] = []
     if args.prompt:
         hist.append({"role": "user", "content": args.prompt})
@@ -25,13 +28,91 @@ def cmd_chat(args):
         return
     while True:
         try:
-            line = input("you> ").strip()
+            line = input(ui.prompt()).strip()
         except (EOFError, KeyboardInterrupt):
             break
         if line in ("/exit", "/quit", "exit"):
             break
+        if line == '/clear':
+            ui.clear_screen()
+            ui.banner(cfg, __version__)
+            continue
+        if line in ('/clearsession', '/new', '/reset'):
+            hist.clear()
+            last_result = {}
+            try:
+                import readline
+                readline.clear_history()
+            except ImportError:
+                pass
+            print('Session cleared. Model and workspace preserved.')
+            continue
+        if line == '/help':
+            ui.help()
+            continue
+        if line == '/status':
+            ui.banner(cfg, __version__)
+            continue
+        if line == '/tools':
+            ui.trace(last_result.get('trace', []))
+            continue
+        if line == '/stats':
+            ui.stats(last_result.get('stats', {}))
+            continue
+        if line in ('/doctor', '/repair', '/rollback') or line.startswith('/evolve '):
+            try:
+                from .maintenance import doctor, evolve, rollback
+                if line in ('/doctor', '/repair'):
+                    show_checks(doctor(fix=line == '/repair'))
+                elif line == '/rollback':
+                    print(rollback())
+                else:
+                    with ui.activity():
+                        last_result = evolve(cfg, line[len('/evolve '):], on_event=ui.event)
+                    print(last_result['reply'])
+            except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
+                ui.error(str(exc))
+            except KeyboardInterrupt:
+                ui.error('Self-development cancelled; staged changes were not applied.')
+            continue
+        if line == '/models':
+            import requests
+            try:
+                response = requests.get(cfg['providers']['local']['base_url'].rstrip('/') + '/api/tags', timeout=10)
+                try:
+                    response.raise_for_status()
+                    for model in response.json().get('models', []): print('  ' + model['name'])
+                finally: response.close()
+            except (requests.RequestException, ValueError, KeyError) as exc: ui.error(str(exc))
+            continue
+        if line == '/paste':
+            print('Paste your task; enter a single . on a line to submit.')
+            lines = []
+            try:
+                while True:
+                    part = input('... ')
+                    if part == '.': break
+                    lines.append(part)
+            except (KeyboardInterrupt, EOFError):
+                print('Cancelled.')
+                continue
+            line = '\n'.join(lines).strip()
+        if line.startswith('/model '):
+            model = line.split(maxsplit=1)[1].strip()
+            if model.startswith('local/'): model = model[len('local/'):]
+            if not model:
+                print('Use /model NAME for an installed local Ollama model')
+                continue
+            cfg['default_model'] = 'local/' + model
+            hist.clear()
+            print(f"Model: {cfg['default_model']}")
+            continue
+        if line.startswith('/') and not line.startswith('/workspace '):
+            # Absolute project paths are requests, not slash commands.
+            if not Path(line.split()[0]).is_dir():
+                print('Unknown control. Type /help.')
+                continue
         if line.startswith('/workspace '):
-            from pathlib import Path
             workspace = Path(line[len('/workspace '):]).expanduser().resolve()
             if not workspace.is_dir():
                 print('[error] Workspace must be an existing directory', file=sys.stderr)
@@ -44,94 +125,44 @@ def cmd_chat(args):
             continue
         hist.append({"role": "user", "content": line})
         try:
-            reply = answer(cfg, hist, getattr(args, 'agent', False), stream=True)
+            results = []
+            reply = answer(cfg, hist, getattr(args, 'agent', False), stream=True, on_result=results.append)
         except KeyboardInterrupt:
             hist.pop()
             continue
         except Exception as e:
-            print(f"[error] {e}", file=sys.stderr)
+            ui.error(str(e))
             hist.pop()
             continue
-        hist.append({"role": "assistant", "content": reply})
+        item = {"role": "assistant", "content": reply}
+        if results:
+            last_result = results[-1]
+            item['agent_context'] = last_result.get('context', '')
+        hist.append(item)
+        hist = hist[-100:]
 
 
 
-@contextmanager
-def reply_loader():
-    """Animate on stderr only in a terminal; always clean up before output."""
-    stream = sys.stderr
-    if not stream.isatty():
-        yield
-        return
-    stopped = threading.Event()
+def answer(cfg, messages, agent=True, stream=False, on_result=None):
+    from .agent import run
+    from .maintenance import learn, learned_hints
+    ui = Terminal()
+    cfg['agent']['learned_hints'] = learned_hints()
     started = time.monotonic()
-    label = 'myPA is working…'
-
-    def animate():
-        frames = '|/-\\'
-        index = 0
-        while not stopped.is_set():
-            elapsed = int(time.monotonic() - started)
-            stream.write(f'\r{frames[index % len(frames)]} {label} {elapsed}s')
-            stream.flush()
-            index += 1
-            stopped.wait(0.1)
-
-    thread = threading.Thread(target=animate, daemon=True)
-    thread.start()
     try:
-        yield
-    finally:
-        stopped.set()
-        thread.join()
-        width = len(label) + len(str(int(time.monotonic() - started))) + 5
-        stream.write('\r' + ' ' * width + '\r')
-        stream.flush()
-
-
-def answer(cfg, messages, agent=False, stream=False):
-    if stream and cfg['default_model'].startswith('local/'):
-        from .agent import run
-        started = time.monotonic()
-        writing = False
-        def event(item):
-            nonlocal writing
-            if item['type'] == 'token':
-                if not writing:
-                    print('myPA> ', end='', flush=True)
-                    writing = True
-                print(item['text'], end='', flush=True)
-            elif item['type'] == 'status':
-                print(f"[{item['text']} · {time.monotonic() - started:.0f}s]", file=sys.stderr, flush=True)
-            elif item['type'] == 'reset':
-                if writing: print(flush=True)
-                writing = False
-            elif item['type'] == 'tool':
-                tool = item['event']
-                print(f"[{tool['tool']}] {tool['result'][:500]}", file=sys.stderr, flush=True)
-        try:
-            result = run(cfg, messages, on_event=event, use_tools=agent)
-            if not writing: print(f"myPA> {result['reply']}", end='')
-            print('\n', flush=True)
-            return result['reply']
-        except KeyboardInterrupt:
-            print('\n[Cancelled]', file=sys.stderr)
-            raise
-    with reply_loader():
-        if not agent:
-            reply = chat(cfg, messages)
-            if stream: print(f'myPA> {reply}\n')
-            return reply
-        from .agent import run
-        result = run(cfg, messages)
-    for item in result['trace']:
-        print(f"[{item['tool']}] {item['result'][:500]}", file=sys.stderr)
-    if stream: print(f"myPA> {result['reply']}\n")
-    return result['reply']
+        with ui.activity():
+            result = run(cfg, messages, on_event=ui.event if stream else None, use_tools=True)
+        cfg['agent']['workspace'] = result.get('workspace', cfg['agent']['workspace'])
+        learn(result.get('trace', []))
+        if on_result: on_result(result)
+        if stream: ui.reply(result['reply'], time.monotonic() - started, result.get('trace', []))
+        return result['reply']
+    except KeyboardInterrupt:
+        ui.error('Cancelled. You can enter another task.')
+        raise
 
 
 def cmd_config(args):
-    from .config import save_global
     import json
     cfg = load()
     if args.show:
@@ -159,20 +190,26 @@ def cmd_rules(args):
         print(json.dumps(R.list_rules(), indent=2))
 
 
+def show_checks(checks):
+    for name, ok, detail in checks:
+        print(f"  {'OK' if ok else 'FAIL'}  {name}: {detail}")
+    return all(ok for _, ok, _ in checks)
+
+
 def _main(argv=None):
-    ap = argparse.ArgumentParser(prog="mypa", description="myPA - Personal AI")
+    ap = argparse.ArgumentParser(prog="mypa", description="myPA — local terminal coding agent")
     ap.add_argument("--version", action="store_true")
-    ap.add_argument("--web", action="store_true", help="alias for web")
-    ap.add_argument("--port", type=int, default=3210)
+    ap.add_argument("--workspace", help="project directory (defaults to current directory)")
     sub = ap.add_subparsers(dest="cmd")
-    c = sub.add_parser("chat", help="terminal chat")
-    c.add_argument("prompt", nargs="?", default=None)
     a = sub.add_parser('agent', help='local agent with files, commands and web tools')
     a.add_argument('prompt', nargs='?', default=None)
-    a.add_argument('--workspace', help='project directory for file tools and commands')
+    a.add_argument('--workspace', default=argparse.SUPPRESS, help='project directory for file tools and commands')
     a.set_defaults(agent=True)
-    w = sub.add_parser("web", help="launch web UI")
-    w.add_argument("--port", type=int, default=3210)
+    d = sub.add_parser('doctor', help='diagnose local installation; --fix repairs dependencies, Ollama and missing model')
+    d.add_argument('--fix', action='store_true')
+    e = sub.add_parser('evolve', help='develop and verify improvements to myPA using the local model')
+    e.add_argument('request', help='the improvement or internal bug to fix')
+    sub.add_parser('rollback', help='restore source from the last self-development backup')
     g = sub.add_parser("config", help="view/set config")
     g.add_argument("--show", action="store_true")
     g.add_argument("--set-default", default=None)
@@ -186,24 +223,32 @@ def _main(argv=None):
     if args.version:
         print(__version__)
         return
-    if args.cmd == "web" or args.web:
-        from .server import serve
-        serve(args.port)
+    if args.cmd == 'doctor':
+        from .maintenance import doctor
+        if not show_checks(doctor(fix=args.fix)): raise SystemExit(1)
+    elif args.cmd == 'evolve':
+        from .maintenance import evolve
+        ui = Terminal()
+        with ui.activity(): result = evolve(load(), args.request, on_event=ui.event)
+        print(result['reply'])
+    elif args.cmd == 'rollback':
+        from .maintenance import rollback
+        print(rollback())
     elif args.cmd == "config":
         cmd_config(args)
     elif args.cmd == "rules":
         cmd_rules(args)
-    elif args.cmd in ("chat", "agent"):
+    elif args.cmd == "agent":
         cmd_chat(args)
     else:
-        cmd_chat(argparse.Namespace(prompt=None))
+        cmd_chat(argparse.Namespace(prompt=None, agent=True, workspace=args.workspace))
 
 
 def main(argv=None):
     try:
         return _main(argv)
-    except (ValueError, RuntimeError, OSError, IndexError) as exc:
-        print(f"myPA: {exc}", file=sys.stderr)
+    except (ValueError, RuntimeError, OSError, IndexError, subprocess.SubprocessError) as exc:
+        Terminal().error(str(exc))
         raise SystemExit(1) from None
 
 

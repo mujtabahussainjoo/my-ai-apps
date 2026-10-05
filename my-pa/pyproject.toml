@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mypa"
 version = "0.1.0"
-description = "myPA - Personal AI agent (OpenCode-compatible, cross-platform)"
+description = "myPA - Local terminal coding agent"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["requests>=2.28"]
@@ -16,9 +16,3 @@ mypa = "mypa.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["mypa*"]
-
-[tool.setuptools.package-data]
-mypa = ["web/*.html", "web/*.js", "web/*.css"]
-
-[tool.setuptools.cmdclass]
-build_py = "build_support.BuildWithWeb"

@@ -12,11 +12,9 @@ DEFAULT_MODEL = 'local/qwen2.5-coder:7b'
 DEFAULTS = {
     'app': 'myPA', 'theme': 'mypa-dark', 'default_model': DEFAULT_MODEL,
     'models_enabled': [DEFAULT_MODEL], 'permissions': [],
-    'agent': {'workspace': '.', 'shell_enabled': True, 'max_steps': 16},
+    'agent': {'workspace': '.', 'shell_enabled': True, 'max_steps': 16,
+              'num_ctx': 4096, 'num_predict': 1024},
     'providers': {
-        'opencode': {'enabled': False},
-        'openai': {'enabled': False, 'api_key': '{env:OPENAI_API_KEY}', 'model': 'gpt-4o-mini'},
-        'anthropic': {'enabled': False, 'api_key': '{env:ANTHROPIC_API_KEY}', 'model': 'claude-sonnet-4-5'},
         'local': {'enabled': True, 'base_url': 'http://127.0.0.1:11434', 'model': 'qwen2.5-coder:7b'},
     },
 }
@@ -67,6 +65,12 @@ def validate(cfg: dict) -> dict:
     steps = agent.get('max_steps', 16)
     if isinstance(steps, bool) or not isinstance(steps, int) or not 1 <= steps <= 32:
         raise ValueError('agent.max_steps must be 1–32')
+    for field, minimum, maximum in [('num_ctx', 2048, 32768), ('num_predict', 128, 4096)]:
+        value = agent.get(field, DEFAULTS['agent'][field])
+        if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+            raise ValueError(f'agent.{field} must be {minimum}–{maximum}')
+    if agent.get('num_predict', 1024) >= agent.get('num_ctx', 4096):
+        raise ValueError('agent.num_predict must be smaller than agent.num_ctx')
     rules = cfg.get('permissions', [])
     if not isinstance(rules, list):
         raise ValueError('permissions must be a list')

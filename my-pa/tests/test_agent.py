@@ -1,9 +1,10 @@
 import copy
+import os
 import tempfile
 from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
-from mypa.agent import ToolBox, run, text_tool_calls, compact_history
+from mypa.agent import ToolBox, run, text_tool_calls, compact_history, requires_tools
 from mypa.config import DEFAULTS
 
 class AgentTests(unittest.TestCase):
@@ -17,22 +18,33 @@ class AgentTests(unittest.TestCase):
         self.box.execute('write_file', {'path':'src/hello.py','content':'print("hello")\n'})
         self.box.execute('edit_file', {'path':'src/hello.py','old':'hello','new':'world'})
         self.assertEqual(self.box.execute('read_file', {'path':'src/hello.py'}), 'print("world")\n')
-        self.assertIn('src/hello.py:1', self.box.execute('search_files', {'query':'world'}))
+        self.assertIn(str(Path('src/hello.py')) + ':1', self.box.execute('search_files', {'query':'world'}))
         with self.assertRaises(ValueError): self.box.execute('edit_file', {'path':'src/hello.py','old':'missing','new':'x'})
     def test_traversal_symlink_and_rules(self):
         with self.assertRaises(ValueError): self.box.path('../escape')
         with self.assertRaises(ValueError): self.box.path('.git/config')
-        (Path(self.temp.name)/'outside').symlink_to('/tmp')
-        with self.assertRaises(ValueError): self.box.path('outside/escape')
+        if os.name != 'nt':
+            (Path(self.temp.name)/'outside').symlink_to('/tmp')
+            with self.assertRaises(ValueError): self.box.path('outside/escape')
         self.cfg['permissions'] = [{'action':'write','resource':'*','effect':'deny'}]
         with self.assertRaises(ValueError): self.box.execute('write_file', {'path':'a','content':'b'})
     def test_shell_disabled(self):
         self.cfg['agent']['shell_enabled'] = False
         with self.assertRaises(ValueError): self.box.execute('run_command', {'command':'echo hi'})
+
+    @unittest.skipIf(__import__('os').name == 'nt', 'POSIX process group cancellation')
+    def test_shell_cancellation_stops_process_group(self):
+        import signal
+        process = Mock(pid=12345)
+        process.wait.side_effect = [KeyboardInterrupt, 0]
+        with patch('mypa.agent.subprocess.Popen', return_value=process), patch('os.killpg') as kill:
+            with self.assertRaises(KeyboardInterrupt):
+                self.box.execute('run_command', {'command':'long-running test'})
+        kill.assert_called_once_with(12345, signal.SIGKILL)
     def test_model_receives_real_tool_result(self):
         first = Mock(); first.json.return_value = {'message': {'role':'assistant','content':'','tool_calls':[{'function':{'name':'write_file','arguments':{'path':'answer.txt','content':'42'}}}]}}
         second = Mock(); second.json.return_value = {'message': {'role':'assistant','content':'Saved answer.txt'}}
-        with patch('mypa.agent.requests.post', side_effect=[first, second]) as post:
+        with patch('mypa.agent.requests.Session.post', side_effect=[first, second]) as post:
             result = run(self.cfg, [{'role':'user','content':'Save the answer'}])
         self.assertEqual((Path(self.temp.name)/'answer.txt').read_text(), '42')
         self.assertTrue(result['trace'][0]['ok'])
@@ -40,7 +52,7 @@ class AgentTests(unittest.TestCase):
     def test_bad_tool_and_limit(self):
         self.cfg['agent']['max_steps'] = 1
         response = Mock(); response.json.return_value = {'message':{'role':'assistant','content':'','tool_calls':[{'function':{'name':'invalid','arguments':{}}}]}}
-        with patch('mypa.agent.requests.post', return_value=response): result = run(self.cfg, [{'role':'user','content':'Do something'}])
+        with patch('mypa.agent.requests.Session.post', return_value=response): result = run(self.cfg, [{'role':'user','content':'Do something'}])
         self.assertFalse(result['trace'][0]['ok'])
         self.assertIn('step limit', result['reply'])
 
@@ -52,7 +64,7 @@ class AgentTests(unittest.TestCase):
             {'role':'assistant', 'content':'Completed after retry'}
         ]:
             response = Mock(); response.json.return_value = {'message': message}; responses.append(response)
-        with patch('mypa.agent.requests.post', side_effect=responses), patch.object(ToolBox, 'execute', side_effect=['Exit code: 1\nexternally-managed-environment', 'Exit code: 0\nInstalled']) as execute:
+        with patch('mypa.agent.requests.Session.post', side_effect=responses), patch.object(ToolBox, 'execute', side_effect=['Exit code: 1\nexternally-managed-environment', 'Exit code: 0\nInstalled']) as execute:
             result = run(self.cfg, [{'role':'user','content':'Install project dependencies'}])
         self.assertEqual(execute.call_count, 2)
         self.assertFalse(result['trace'][0]['ok'])
@@ -67,10 +79,11 @@ class AgentTests(unittest.TestCase):
 
     def test_explicit_project_path_selects_workspace(self):
         response = Mock(); response.json.return_value = {'message':{'role':'assistant','content':'Ready'}}
-        with tempfile.TemporaryDirectory() as target, patch('mypa.agent.requests.post', return_value=response):
+        with tempfile.TemporaryDirectory() as target, patch('mypa.agent.requests.Session.post', return_value=response):
             result = run(self.cfg, [{'role':'user','content':target + ' inspect this project'}])
             self.assertEqual(result['workspace'], target)
 
+    @unittest.skipIf(os.name == 'nt', 'POSIX shell and symlink test')
     def test_project_venv_used_for_commands(self):
         import sys
         binaries = Path(self.temp.name) / '.venv' / 'bin'
@@ -84,7 +97,7 @@ class AgentTests(unittest.TestCase):
         response = Mock()
         response.iter_lines.return_value = [b'{"message":{"content":"Hello"},"done":false}', b'{"message":{"content":" there"},"done":true}']
         events = []
-        with patch('mypa.agent.requests.post', return_value=response) as post:
+        with patch('mypa.agent.requests.Session.post', return_value=response) as post:
             result = run(self.cfg, [{'role':'user','content':'Hello'}], on_event=events.append, use_tools=False)
         self.assertEqual(result['reply'], 'Hello there')
         self.assertEqual([e['text'] for e in events if e['type'] == 'token'], ['Hello', ' there'])
@@ -95,7 +108,7 @@ class AgentTests(unittest.TestCase):
         first = Mock(); first.iter_lines.return_value = [b'{"message":{"tool_calls":[{"function":{"name":"write_file","arguments":{"path":"stream.txt","content":"ok"}}}]},"done":true}']
         second = Mock(); second.iter_lines.return_value = [b'{"message":{"content":"Saved"},"done":true}']
         events = []
-        with patch('mypa.agent.requests.post', side_effect=[first, second]):
+        with patch('mypa.agent.requests.Session.post', side_effect=[first, second]):
             result = run(self.cfg, [{'role':'user','content':'Save a file'}], on_event=events.append)
         self.assertEqual(result['reply'], 'Saved')
         self.assertTrue(next(e for e in events if e['type'] == 'tool')['event']['ok'])
@@ -103,16 +116,106 @@ class AgentTests(unittest.TestCase):
 
     def test_incomplete_stream_is_error(self):
         response = Mock(); response.iter_lines.return_value = [b'{"message":{"content":"partial"},"done":false}']
-        with patch('mypa.agent.requests.post', return_value=response), self.assertRaises(RuntimeError):
+        with patch('mypa.agent.requests.Session.post', return_value=response), self.assertRaises(RuntimeError):
             run(self.cfg, [{'role':'user','content':'Hello'}], on_event=lambda e: None)
         response.close.assert_called_once()
 
     def test_agent_greeting_avoids_tools(self):
         response = Mock(); response.json.return_value = {'message': {'content':'Hello'}}
-        with patch('mypa.agent.requests.post', return_value=response) as post:
+        with patch('mypa.agent.requests.Session.post', return_value=response) as post:
             result = run(self.cfg, [{'role':'user','content':'Hi'}])
         self.assertEqual(result['reply'], 'Hello')
         self.assertNotIn('tools', post.call_args.kwargs['json'])
+        prompt = post.call_args.kwargs['json']['messages'][0]['content']
+        self.assertIn('real file and command tools', prompt)
+        self.assertNotIn('select Agent mode', prompt)
+        self.assertLess(len(prompt), 500)
+        self.assertEqual(post.call_args.kwargs['json']['options']['num_ctx'], 4096)
+        self.assertEqual(post.call_args.kwargs['json']['keep_alive'], '5m')
+
+    def test_disconnect_reports_memory_diagnostics(self):
+        import requests
+        with patch('mypa.agent.requests.Session.post', side_effect=requests.ConnectionError('Remote end closed connection')):
+            with self.assertRaisesRegex(RuntimeError, 'run out of memory'):
+                run(self.cfg, [{'role':'user','content':'Hi'}])
+
+    def test_model_metrics_and_http_cleanup(self):
+        response = Mock()
+        response.json.return_value = {'message': {'content':'Hello'}, 'eval_count': 12,
+                                      'eval_duration': 2_000_000_000, 'load_duration': 100,
+                                      'prompt_eval_count': 30, 'prompt_eval_duration': 200}
+        with patch('mypa.agent.requests.Session.post', return_value=response), patch('mypa.agent.requests.Session.close') as close:
+            result = run(self.cfg, [{'role':'user','content':'Hi'}])
+        close.assert_called_once()
+        self.assertEqual(result['stats']['model_requests'], 1)
+        self.assertEqual(result['stats']['eval_count'], 12)
+        self.assertEqual(result['stats']['eval_duration'], 2_000_000_000)
+
+    def test_http_cleanup_on_connection_failure(self):
+        import requests
+        with patch('mypa.agent.requests.Session.post', side_effect=requests.ConnectionError('offline')), patch('mypa.agent.requests.Session.close') as close:
+            with self.assertRaises(RuntimeError):
+                run(self.cfg, [{'role':'user','content':'Hi'}])
+        close.assert_called_once()
+
+    def test_search_unicode_and_fresh_edits(self):
+        self.box.execute('write_file', {'path':'unicode.txt', 'content':'one\ncafé\n'})
+        (Path(self.temp.name)/'binary.dat').write_bytes(b'\xffcaf\xc3\xa9')
+        self.assertEqual(self.box.execute('search_files', {'query':'café'}), 'unicode.txt:2: café')
+        self.box.execute('edit_file', {'path':'unicode.txt', 'old':'café', 'new':'changed'})
+        self.assertEqual(self.box.execute('search_files', {'query':'café'}), 'No matches')
+        self.assertIn('changed', self.box.execute('search_files', {'query':'changed'}))
+
+    def test_action_question_requires_execution(self):
+        self.assertTrue(requires_tools('Can you create files and folders in demo?'))
+        self.assertFalse(requires_tools('Can you change files and folders?'))
+        self.assertFalse(requires_tools('How do I create a folder?'))
+
+    def test_follow_up_receives_previous_execution_evidence(self):
+        response = Mock(); response.json.return_value = {'message': {'content':'Ready'}}
+        messages = [{'role':'user','content':'Earlier task'},
+                    {'role':'assistant','content':'Done', 'agent_context':'write_file demo.txt: Saved demo.txt'},
+                    {'role':'user','content':'What did you do?'}]
+        with patch('mypa.agent.requests.Session.post', return_value=response) as post:
+            run(self.cfg, messages)
+        sent = post.call_args.kwargs['json']['messages']
+        self.assertIn('Saved demo.txt', sent[-2]['content'])
+        self.assertNotIn('agent_context', sent[-2])
+
+    def test_cli_preserves_selected_workspace_and_context(self):
+        import io
+        from contextlib import redirect_stdout
+        from mypa.cli import answer
+        results = []
+        result = {'reply':'Done', 'trace':[], 'workspace':'/tmp', 'context':'Saved demo.txt'}
+        with patch('mypa.agent.run', return_value=result), redirect_stdout(io.StringIO()):
+            answer(self.cfg, [{'role':'user','content':'Task'}], agent=True, stream=True, on_result=results.append)
+        self.assertEqual(self.cfg['agent']['workspace'], '/tmp')
+        self.assertEqual(results[0]['context'], 'Saved demo.txt')
+
+    def test_long_conversation_denial_recovers_with_tools(self):
+        messages = []
+        for _ in range(20):
+            messages.extend([{'role':'user', 'content':'Hello'},
+                             {'role':'assistant', 'content':'I cannot edit files.'}])
+        messages.append({'role':'user', 'content':'Can you create files and folders in demo?'})
+        responses = []
+        for message in [
+            {'content':'As an AI agent, I am designed to provide information. Here are the steps.'},
+            {'tool_calls':[{'function':{'name':'write_file','arguments':{'path':'demo/a.txt','content':'ok'}}}]},
+            {'content':'Saved demo/a.txt.'},
+        ]:
+            response = Mock(); response.json.return_value = {'message':message}; responses.append(response)
+        payloads = []
+        def respond(*args, **kwargs):
+            payloads.append(copy.deepcopy(kwargs['json']))
+            return responses.pop(0)
+        with patch('mypa.agent.requests.Session.post', side_effect=respond):
+            result = run(self.cfg, messages)
+        self.assertEqual((Path(self.temp.name)/'demo/a.txt').read_text(), 'ok')
+        self.assertTrue(result['trace'][0]['ok'])
+        self.assertTrue(all('tools' in payload for payload in payloads))
+        self.assertNotIn('Here are the steps.', str(payloads[1]['messages']))
 
     def test_cli_prints_tokens_without_duplicating_answer(self):
         import io
@@ -128,7 +231,7 @@ class AgentTests(unittest.TestCase):
 
     def test_agent_identity_describes_real_capabilities(self):
         response = Mock(); response.json.return_value = {'message': {'content':'I can edit workspace files using tools.'}}
-        with patch('mypa.agent.requests.post', return_value=response) as post:
+        with patch('mypa.agent.requests.Session.post', return_value=response) as post:
             run(self.cfg, [{'role':'user','content':'Can you change files and folders?'}])
         prompt = post.call_args.kwargs['json']['messages'][0]['content']
         self.assertIn('You CAN list, read, create and edit files', prompt)
@@ -174,7 +277,7 @@ class AgentTests(unittest.TestCase):
             {'content': 'Saved real.txt.'},
         ]:
             response = Mock(); response.json.return_value = {'message':message}; responses.append(response)
-        with patch('mypa.agent.requests.post', side_effect=responses):
+        with patch('mypa.agent.requests.Session.post', side_effect=responses):
             result = run(self.cfg, [{'role':'user','content':'Create real.txt'}])
         self.assertEqual((Path(self.temp.name)/'real.txt').read_text(), 'yes')
         self.assertTrue(result['trace'][0]['ok'])
@@ -182,7 +285,7 @@ class AgentTests(unittest.TestCase):
     def test_no_execution_is_reported_honestly(self):
         response = Mock(); response.json.return_value = {'message': {'content':'Done'}}
         events = []
-        with patch('mypa.agent.requests.post', return_value=response) as post:
+        with patch('mypa.agent.requests.Session.post', return_value=response) as post:
             result = run(self.cfg, [{'role':'user','content':'Delete missing.txt'}])
         self.assertEqual(post.call_count, 3)
         self.assertIn('No completion is verified', result['reply'])

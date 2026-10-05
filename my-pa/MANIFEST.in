@@ -1,2 +1,2 @@
-include build_support.py
-recursive-include web *.html *.js *.css
+include install.py install.sh install.ps1 mypa.example.jsonc
+recursive-include tests *.py

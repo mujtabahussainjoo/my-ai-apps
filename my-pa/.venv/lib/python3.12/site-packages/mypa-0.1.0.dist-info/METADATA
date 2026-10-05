@@ -1,95 +1,68 @@
 Metadata-Version: 2.4
 Name: mypa
 Version: 0.1.0
-Summary: myPA - Personal AI agent (OpenCode-compatible, cross-platform)
+Summary: myPA - Local terminal coding agent
 Requires-Python: >=3.10
 Description-Content-Type: text/markdown
 Requires-Dist: requests>=2.28
 
-# myPA — your Personal AI (OpenCode-compatible wrapper)
-# Cross-platform: Windows / Ubuntu / macOS
-# Python-first so it runs without Node. Web + CLI + Desktop(Electron stub).
+# myPA
 
-myPA is NOT a byte-for-byte fork of OpenCode (that repo is thousands of
-files and moves fast). It is a branded distribution layer:
+A local terminal coding agent powered by Ollama. The default model is `qwen2.5-coder:7b`. It reads and edits projects, manages files and directories, executes commands and tests, and researches the web.
 
-* reuses upstream `opencode` when installed (does not vendor it)
-* provides `mypa` CLI, Web settings UI, and Desktop wrapper
-* default model = opencode Zen free model (enabled out of box)
-* optional OpenAI / Anthropic / local (Ollama) providers
-* installer ALWAYS asks before installing Python components or local models
-
-## Layout
-
-```
-myPA/
-  Setup-myPA.bat             # Windows: DOUBLE-CLICK to install
-  Setup-myPA.sh              # Ubuntu: double-click (Run as Program) or sh Setup-myPA.sh
-  setup_win.py               # Windows guided setup (env check, launchers, shortcuts)
-  setup_wizard.py            # interactive installer, permission-first
-  install.ps1                # Windows installer steps
-  install.sh                 # Ubuntu / macOS installer steps
-  mypa.desktop               # Ubuntu desktop icon template
-  build_deb.sh               # Ubuntu optional .deb builder
-  pyproject.toml
-    __init__.py
-    __main__.py
-    cli.py
-    config.py
-    providers.py
-    server.py
-    installer.py
-  web/
-    index.html             # chat + looks customization
-    settings.html          # keys + provider config
-    styles.css
-    app.js
-  desktop/
-    package.json           # Electron wrapper (needs Node, optional)
-    main.js
-  mypa.example.jsonc
-  README.md
-```
-
-## Install (double-click)
-
-**Windows:** double-click `Setup-myPA.bat`. It checks for Python 3.10+,
-then runs `install.ps1`: pip install (asks), setup wizard with local-model
-choice (asks, never silent), `mypa.bat` launcher + Start Menu/Desktop
-shortcuts (asks).
-
-**Ubuntu:** double-click `Setup-myPA.sh` (right-click -> Run as Program)
-or run `sh Setup-myPA.sh`. It runs `install.sh`: pip install (asks),
-wizard (asks), `~/.local/bin/mypa` launcher (asks), desktop icon (asks).
-Optional installable package: `sh build_deb.sh` -> `sudo dpkg -i ...deb`.
-
-## Quick start (manual, no Node needed)
-
-```powershell
-cd myPA
-python -m pip install -e .
-python setup_wizard.py     # asks before anything is installed
-python -m mypa --help
-python -m mypa --web       # open http://127.0.0.1:3210
-```
-
-Ubuntu / macOS:
+## Start
 
 ```bash
-cd myPA
-pip3 install -e .
-python3 setup_wizard.py
-python3 -m mypa --web
+mypa
+mypa --workspace /path/to/project
+mypa agent "Inspect this project and explain its structure"
+mypa agent --workspace /path/to/project "Fix the failing tests"
 ```
 
-## Settings
+The workspace defaults to the current directory unless your configuration overrides it. Model responses and task decisions come from the selected local Ollama model. The terminal shows live progress, tool outcomes, a final response, and elapsed time. `/tools` shows full results from the most recent task. Preliminary model replies are withheld until the tool loop finishes.
 
-Config resolution (later overrides earlier):
-1. `~/.config/mypa/mypa.jsonc` (global)
-2. `./mypa.jsonc` (project)
+## Terminal controls
 
-Edit via Web UI `/settings.html` or by hand. Keys are stored as
-`{env:VAR_NAME}` references where possible — never hardcode secrets.
+| Control | Action |
+| --- | --- |
+| `/help` | Show commands |
+| `/new` or `/reset` | Clear conversation |
+| `/workspace PATH` | Switch project and clear conversation |
+| `/models` | List installed local models |
+| `/model NAME` | Select a local model for this session |
+| `/status` | Show model, workspace, and context |
+| `/tools` | Inspect the last task's tool results |
+| `/paste` | Enter multiple lines; finish with a single `.` |
+| `/exit` | Quit |
+| Ctrl+C | Cancel the active model request or multiline input |
+| Up / Down | Recall input where Python readline is available |
+| Tab | Complete slash commands where readline is available |
 
-Default enabled provider:
-`opencode/muse-spark-1.3-contributor-free`
+Colors and animated progress work in terminals. Redirected output stays plain; set `NO_COLOR=1` to disable colors. Conversation and tool summaries remain in memory for the session. `/new` resets conversation context. Ctrl+C during a shell command may leave that command running until its existing 60-second timeout.
+
+## Configuration
+
+Global settings live in `~/.config/mypa/mypa.jsonc` (or `$XDG_CONFIG_HOME/mypa/mypa.jsonc`). A `mypa.jsonc` in the current directory overrides global settings. The example config documents the local settings.
+
+```bash
+mypa config --show
+mypa config --set-default local/qwen2.5-coder:7b
+mypa rules --list
+mypa rules --add shell "rm *" deny
+```
+
+Defaults use 4096 context tokens, 1024 output tokens per step, and 16 tool steps. Ollama retains the model for five minutes. Keep context modest on machines with limited RAM. If Ollama disconnects, check `journalctl -u ollama -n 30`; `oom-kill` means the machine ran out of memory.
+
+File tools stay inside the workspace and protect `.git`, `.aws`, `.agents`, and `.codex`. Shell commands run with your account's access and use the project's virtual environment when available. Commands time out after 60 seconds. Deletion requires a user request; nonempty directory deletion requires an explicit recursive flag. The tool log records actual execution. A step limit or failed tool is reported without claiming success.
+
+## Development
+
+Python 3.10+ and `requests` are required. Ollama must be running with the selected model installed.
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -e .
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+The package contains only the terminal agent, local conversation validation, tools, configuration, permission controls, and tests. Web UI, desktop UI, cloud adapters, and legacy installers have been removed.

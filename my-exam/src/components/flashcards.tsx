@@ -366,9 +366,11 @@ export function DeleteFlashCardButton({ id }: { id: string }) {
 export function DeckPlayground({
   dueCards,
   recentCards,
+  canEdit = true,
 }: {
   dueCards: Card[];
   recentCards: Card[];
+  canEdit?: boolean;
 }) {
   const [mode, setMode] = useState<"list" | "review">("list");
   const router = useRouter();
@@ -406,7 +408,7 @@ export function DeckPlayground({
                 <span className="tag text-violet-300">Box {min(c.box, 5)}</span>
               </div>
             </div>
-            <DeleteFlashCardButton id={c.id} />
+            {canEdit && <DeleteFlashCardButton id={c.id} />}
           </div>
         ))}
       </div>

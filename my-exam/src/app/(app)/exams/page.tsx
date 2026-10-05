@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { GraduationCap, ArrowRight, CalendarDays, CircleHelp } from "lucide-react";
-import { getCurrentUser } from "@/lib/auth";
+import { getCurrentUser, isAdmin } from "@/lib/auth";
 import { listExams } from "@/lib/data";
 import { Card, Badge, EmptyState } from "@/components/ui";
 import { CreateExamForm } from "@/components/exam-forms";
@@ -23,14 +23,18 @@ export default async function ExamsPage() {
             Define your exams and their topic weightages — mock exams mirror them exactly.
           </p>
         </div>
-        <CreateExamForm />
+        <div className="text-right">{isAdmin(user) ? <CreateExamForm /> : null}</div>
       </div>
 
       {exams.length === 0 ? (
         <EmptyState
           icon={<GraduationCap className="h-6 w-6" />}
-          title="Create your first exam plan"
-          description="Name an exam or certification, add its topics with a % weightage each, and train it with your materials."
+          title={isAdmin(user) ? "Create your first exam plan" : "No exam plans yet"}
+          description={
+            isAdmin(user)
+              ? "Name an exam or certification, add its topics with a % weightage each, and train it with your materials."
+              : "The admin hasn't set up any exams yet. Check back later."
+          }
         />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">

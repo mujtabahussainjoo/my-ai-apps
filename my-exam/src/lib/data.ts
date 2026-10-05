@@ -1,5 +1,5 @@
 import { query, queryOne } from "@/lib/db";
-import { getCurrentUser, scoped, isAdmin } from "@/lib/auth";
+import { getCurrentUser, scoped, isAdmin, requireAdmin } from "@/lib/auth";
 
 type ExamRow = {
   id: string;
@@ -44,19 +44,33 @@ export type TopicNode = TopicRow & { children: TopicNode[] };
 export async function listExams(): Promise<Exam[]> {
   const user = await getCurrentUser();
   if (!user) return [];
+  const admin = isAdmin(user);
+  const where = admin
+    ? "TRUE"
+    : `(e.user_id = $1 OR e.id IN (SELECT exam_id FROM content_grants WHERE user_id = $1 AND exam_id IS NOT NULL))`;
+  const params = admin ? [] : [user.id];
   const rows = await query<ExamRow>(
     `SELECT e.id, e.title, e.description, e.target_date AS "targetDate", e.color,
             u.email AS "ownerEmail",
             (SELECT count(*)::text FROM topics t WHERE t.exam_id = e.id) AS "topicCount",
             (SELECT count(*)::text FROM questions q WHERE q.exam_id = e.id) AS "questionCount",
-            (SELECT count(*)::text FROM materials m WHERE m.exam_id = e.id) AS "materialCount",
+            (SELECT count(*)::text FROM materials m
+              WHERE m.exam_id = e.id
+                 OR m.knowledge_base_id IN (SELECT knowledge_base_id FROM exam_knowledge_bases WHERE exam_id = e.id)
+            ) AS "materialCount",
             (SELECT count(*)::text FROM quiz_sessions qs WHERE qs.exam_id = e.id AND qs.mode = 'mock') AS "mockCount",
-            (SELECT COALESCE(sum(t.weightage), 0)::text FROM topics t WHERE t.exam_id = e.id) AS "totalWeightage"
+            -- Only leaf topics hold weight, so a domain and its skills are not
+            -- counted twice against the 100%.
+            (SELECT COALESCE(sum(t.weightage), 0)::text
+               FROM topics t
+              WHERE t.exam_id = e.id
+                AND NOT EXISTS (SELECT 1 FROM topics c WHERE c.parent_id = t.id)
+            ) AS "totalWeightage"
      FROM exams e
      LEFT JOIN users u ON u.id = e.user_id
-     WHERE ${scoped(user, "e.user_id")}
+     WHERE ${where}
      ORDER BY e.created_at DESC`,
-    [user.id]
+    params
   );
   return rows.map((r) => ({
     id: r.id,
@@ -85,7 +99,8 @@ export async function listTopics(examId: string): Promise<TopicRow[]> {
   if (!user) return [];
   if (!isAdmin(user)) {
     const owns = await query(
-      "SELECT id FROM exams WHERE id = $1 AND user_id = $2",
+      `SELECT id FROM exams WHERE id = $1 AND
+         (user_id = $2 OR id IN (SELECT exam_id FROM content_grants WHERE user_id = $2 AND exam_id IS NOT NULL))`,
       [examId, user.id]
     );
     if (owns.length === 0) return [];
@@ -192,16 +207,30 @@ export async function listMaterials(opts: {
 } = {}): Promise<MaterialRow[]> {
   const user = await getCurrentUser();
   if (!user) return [];
-  const params: unknown[] = [user.id];
-  const clauses = [scoped(user, "m.user_id")];
+  const adminUser = isAdmin(user);
+  const params: unknown[] = [];
+  const clauses: string[] = [];
+  if (!adminUser) {
+    params.push(user.id);
+    clauses.push(
+      `(m.user_id = $${params.length} OR m.exam_id IN (SELECT exam_id FROM content_grants WHERE user_id = $${params.length} AND exam_id IS NOT NULL))`
+    );
+  }
   if (opts.examId) {
     params.push(opts.examId);
-    clauses.push(`m.exam_id = $${params.length}`);
+    // An exam's study material is everything filed directly against it plus
+    // everything in the knowledge bases linked to it. Without the second half a
+    // course shared between two exams would have to be duplicated per exam.
+    clauses.push(
+      `(m.exam_id = $${params.length} OR m.knowledge_base_id IN (
+          SELECT knowledge_base_id FROM exam_knowledge_bases WHERE exam_id = $${params.length}))`
+    );
   }
   if (opts.knowledgeBaseId) {
     params.push(opts.knowledgeBaseId);
     clauses.push(`m.knowledge_base_id = $${params.length}`);
   }
+
   return query<MaterialRow>(
     `SELECT m.id, m.title, m.type, m.source, m.status,
             m.knowledge_base_id AS "knowledgeBaseId", kb.name AS "knowledgeBaseName",
@@ -213,7 +242,7 @@ export async function listMaterials(opts: {
      FROM materials m
      LEFT JOIN knowledge_bases kb ON kb.id = m.knowledge_base_id
      LEFT JOIN users u ON u.id = m.user_id
-     WHERE ${clauses.join(" AND ")} ORDER BY m.created_at DESC`,
+     WHERE ${clauses.join(" AND ") || "TRUE"} ORDER BY m.created_at DESC`,
     params
   );
 }
@@ -256,8 +285,14 @@ async function buildQuestionWhere(
 ): Promise<{ clauses: string[]; params: unknown[]; empty?: boolean } | null> {
   const user = await getCurrentUser();
   if (!user) return null;
-  const clauses = [scoped(user, "q.user_id")];
-  const params: unknown[] = [user.id];
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  if (!isAdmin(user)) {
+    params.push(user.id);
+    clauses.push(
+      `(q.user_id = $${params.length} OR q.exam_id IN (SELECT exam_id FROM content_grants WHERE user_id = $${params.length} AND exam_id IS NOT NULL) OR (q.exam_id IS NULL AND EXISTS (SELECT 1 FROM content_grants WHERE user_id = $${params.length} AND exam_id IS NULL)))`
+    );
+  }
   if (opts.examId) {
     if (opts.examId === GENERAL_EXAM) {
       clauses.push("q.exam_id IS NULL");
@@ -298,7 +333,7 @@ export async function countQuestions(opts: QuestionFilter): Promise<number> {
   const where = await buildQuestionWhere(opts);
   if (!where || where.empty) return 0;
   const [row] = await query<{ c: string }>(
-    `SELECT count(*)::text AS c FROM questions q WHERE ${where.clauses.join(" AND ")}`,
+    `SELECT count(*)::text AS c FROM questions q WHERE ${where.clauses.join(" AND ") || "TRUE"}`,
     where.params
   );
   return Number(row?.c ?? 0);
@@ -316,7 +351,7 @@ export async function listQuestions(opts: QuestionFilter & {
   let sql = `SELECT ${QUESTION_COLUMNS}
      FROM questions q
      ${QUESTION_JOINS}
-     WHERE ${clauses.join(" AND ")}
+     WHERE ${clauses.join(" AND ") || "TRUE"}
      ORDER BY q.created_at DESC
      LIMIT $${params.length}`;
   if (opts.offset) {
@@ -623,5 +658,72 @@ export async function getChatMessages(
           })(),
       createdAt: r.created_at,
     })),
+  };
+}
+
+// ---------------------------------------------------------------- users (admin)
+
+export type UserRow = {
+  id: string;
+  email: string;
+  name: string;
+  role: "admin" | "user";
+  approved: boolean;
+  createdAt: Date;
+  examCount: number;
+  questionCount: number;
+  lastSeen: Date | null;
+};
+
+/** Admin-only: every account with its content totals. Throws FORBIDDEN for non-admins. */
+export async function listUsers(): Promise<UserRow[]> {
+  await requireAdmin();
+  const rows = await query<{
+    id: string;
+    email: string;
+    name: string;
+    role: string;
+    approved: boolean;
+    created_at: Date;
+    exam_count: string;
+    question_count: string;
+    last_seen: Date | null;
+  }>(
+    `SELECT u.id, u.email, u.name, u.role, u.approved, u.created_at,
+            (SELECT count(*)::text FROM exams e WHERE e.user_id = u.id) AS exam_count,
+            (SELECT count(*)::text FROM questions q WHERE q.user_id = u.id) AS question_count,
+            (SELECT max(created_at) FROM quiz_sessions qs WHERE qs.user_id = u.id) AS last_seen
+     FROM users u
+     ORDER BY u.created_at ASC`
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    email: r.email,
+    name: r.name,
+    role: r.role === "admin" ? "admin" : "user",
+    approved: r.approved,
+    createdAt: r.created_at,
+    examCount: Number(r.exam_count),
+    questionCount: Number(r.question_count),
+    lastSeen: r.last_seen,
+  }));
+}
+
+export type ContentGrants = {
+  examIds: string[];
+  /** True when the user can see the general-knowledge question bank (questions with no exam). */
+  general: boolean;
+};
+
+/** Admin-only: which content a user is allowed to see. */
+export async function getUserGrants(userId: string): Promise<ContentGrants> {
+  await requireAdmin();
+  const rows = await query<{ exam_id: string | null }>(
+    "SELECT exam_id FROM content_grants WHERE user_id = $1",
+    [userId]
+  );
+  return {
+    examIds: rows.filter((r) => r.exam_id).map((r) => r.exam_id as string),
+    general: rows.some((r) => r.exam_id === null),
   };
 }

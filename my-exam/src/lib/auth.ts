@@ -13,10 +13,16 @@ export type SessionUser = {
   email: string;
   name: string;
   role: Role;
+  approved: boolean;
 };
 
 export function isAdmin(user: Pick<SessionUser, "role"> | null): boolean {
   return user?.role === "admin";
+}
+
+/** Admins bypass approval; regular users must be approved before using the app. */
+export function isApproved(user: Pick<SessionUser, "role" | "approved"> | null): boolean {
+  return !!user && (user.approved || isAdmin(user));
 }
 
 /**
@@ -78,8 +84,8 @@ export const getCurrentUser = cache(async (): Promise<SessionUser | null> => {
   const token = store.get(SESSION_COOKIE)?.value;
   const userId = await verifyToken(token);
   if (!userId) return null;
-  const user = await queryOne<{ id: string; email: string; name: string; role: string }>(
-    "SELECT id, email, name, role FROM users WHERE id = $1",
+  const user = await queryOne<{ id: string; email: string; name: string; role: string; approved: boolean }>(
+    "SELECT id, email, name, role, approved FROM users WHERE id = $1",
     [userId]
   );
   if (!user) return null;
@@ -88,6 +94,7 @@ export const getCurrentUser = cache(async (): Promise<SessionUser | null> => {
     email: user.email,
     name: user.name,
     role: user.role === "admin" ? "admin" : "user",
+    approved: user.approved,
   };
 });
 
@@ -96,5 +103,12 @@ export async function requireUser(): Promise<SessionUser> {
   if (!user) {
     throw new Error("UNAUTHORIZED");
   }
+  return user;
+}
+
+/** Requires a logged-in user with the admin role (throws FORBIDDEN otherwise). */
+export async function requireAdmin(): Promise<SessionUser> {
+  const user = await requireUser();
+  if (!isAdmin(user)) throw new Error("FORBIDDEN");
   return user;
 }

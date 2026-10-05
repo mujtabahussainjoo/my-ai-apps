@@ -282,7 +282,10 @@ async function fetchPositionChunks(
     clauses.push(`m.knowledge_base_id = $${params.length + 1}`);
     params.push(knowledgeBaseId);
   } else if (examId) {
-    clauses.push(`(m.exam_id = $${params.length + 1} OR m.exam_id IS NULL)`);
+    clauses.push(
+      `(m.exam_id = $${params.length + 1} OR m.exam_id IS NULL
+        OR m.knowledge_base_id IN (SELECT knowledge_base_id FROM exam_knowledge_bases WHERE exam_id = $${params.length + 1}))`
+    );
     params.push(examId);
   }
   return query<{ title: string; content: string }>(

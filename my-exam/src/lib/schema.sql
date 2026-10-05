@@ -7,14 +7,17 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   name          TEXT NOT NULL,
   role          TEXT NOT NULL DEFAULT 'user',  -- user | admin (admins see every user's content)
+  approved      BOOLEAN NOT NULL DEFAULT TRUE, -- new signups wait for an admin before they can use the app
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Make sure existing installations get the role column (idempotent).
+-- Make sure existing installations get these columns (idempotent).
 ALTER TABLE users
   ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user';
 ALTER TABLE users
   ALTER COLUMN role SET DEFAULT 'user';
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT TRUE;
 
 CREATE TABLE IF NOT EXISTS exams (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -25,6 +28,19 @@ CREATE TABLE IF NOT EXISTS exams (
   color       TEXT NOT NULL DEFAULT '#6366f1',
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Lets an admin open one user's exam, material or question bank to another
+-- (scoped() in src/lib/auth.ts reads this on every non-admin query).
+CREATE TABLE IF NOT EXISTS content_grants (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  exam_id    UUID REFERENCES exams(id) ON DELETE CASCADE,
+  granted_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_content_grants ON content_grants (user_id, exam_id);
+CREATE INDEX IF NOT EXISTS idx_grants_user ON content_grants(user_id);
 
 CREATE TABLE IF NOT EXISTS topics (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -67,6 +83,18 @@ CREATE TABLE IF NOT EXISTS materials (
 -- Attach materials to a knowledge base (idempotent for existing databases).
 ALTER TABLE materials
   ADD COLUMN IF NOT EXISTS knowledge_base_id UUID REFERENCES knowledge_bases(id) ON DELETE SET NULL;
+
+-- materials.exam_id can only point at one exam, so a course shared between two
+-- exams would have to be duplicated. Linking exams to knowledge bases instead
+-- keeps a single copy of the material that both exams can study.
+CREATE TABLE IF NOT EXISTS exam_knowledge_bases (
+  exam_id           UUID NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+  knowledge_base_id UUID NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (exam_id, knowledge_base_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ekb_kb ON exam_knowledge_bases(knowledge_base_id);
 
 CREATE TABLE IF NOT EXISTS chunks (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -181,6 +209,12 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_topics_exam      ON topics(exam_id);
+-- Subtopic names are unique within their parent. Importing a syllabus twice
+-- upserts on this instead of creating a second copy of every subtopic and
+-- orphaning the questions filed against the first one.
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_subtopic_name
+  ON topics (exam_id, parent_id, lower(name))
+  WHERE parent_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_materials_user   ON materials(user_id);
 CREATE INDEX IF NOT EXISTS idx_materials_exam   ON materials(exam_id);
 CREATE INDEX IF NOT EXISTS idx_materials_kb     ON materials(knowledge_base_id);

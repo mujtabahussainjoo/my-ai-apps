@@ -4,10 +4,12 @@ import bcrypt from "bcryptjs";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { recordEvent } from "@/lib/diagnostics";
-import { query, queryOne } from "@/lib/db";
+import { pool, query, queryOne } from "@/lib/db";
+import type { PoolClient } from "pg";
 import {
   createSession,
   deleteSessionCookie,
+  isAdmin,
   requireUser,
   scoped,
   setSessionCookie,
@@ -25,7 +27,21 @@ import {
 import { classifyUpload, titleFromPath } from "@/lib/material-path";
 import { AIError, chatCompletion, chatJson, isAiAvailable, ragSearch, testAiConfig, type AIChatMessage, type AIConfig, type AIProvider } from "@/lib/ai";
 import { generateFromAI, MAX_GEN, persistGeneratedQuestions } from "@/lib/generate";
-import { interviewFeedbackPrompt, assistantSystemPrompt } from "@/lib/prompts";
+import { interviewFeedbackPrompt, assistantSystemPrompt, syllabusExtractPrompt } from "@/lib/prompts";
+import {
+  allocateByWeight,
+  cloneNodes,
+  flattenSyllabus,
+  getPreset,
+  leafTopicIds,
+  normalizeWeights,
+  parseSyllabusOutline,
+  parseWeightedBlueprint,
+  sumLeafWeight,
+  totalAssignedWeight,
+  type SyllabusNode,
+  type WeightedTopic,
+} from "@/lib/syllabus";
 import { ensureChatSession, getUserSettings, parseQuestions, type ChatSource } from "@/lib/data";
 import type { QuizQuestion, AnswerEntry, InterviewFeedback } from "@/lib/data";
 import { gradeAnswer } from "@/lib/grade";
@@ -106,6 +122,7 @@ export async function logoutAction(): Promise<void> {
 export async function createExam(prev: unknown, formData: FormData): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
+  if (!isAdmin(user)) return { ok: false, error: "Admin access required for this action" };
   const title = str(formData.get("title"));
   if (!title) return { ok: false, error: "Exam title is required" };
   const description = str(formData.get("description"));
@@ -123,6 +140,7 @@ export async function createExam(prev: unknown, formData: FormData): Promise<Act
 export async function updateExam(prev: unknown, formData: FormData): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
+  if (!isAdmin(user)) return { ok: false, error: "Admin access required for this action" };
   const id = str(formData.get("id"));
   const title = str(formData.get("title"));
   if (!id || !title) return { ok: false, error: "Exam id and title are required" };
@@ -140,6 +158,7 @@ export async function updateExam(prev: unknown, formData: FormData): Promise<Act
 export async function deleteExam(id: string): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
+  if (!isAdmin(user)) return { ok: false, error: "Admin access required for this action" };
   const owned = await queryOne(`SELECT id FROM exams WHERE id = $1 AND ${scoped(user, "user_id", 2)}`, [id, user.id]);
   if (!owned) return { ok: false, error: "Exam not found" };
   await query("DELETE FROM exams WHERE id = $1", [id]);
@@ -177,6 +196,7 @@ async function topicParentError(
 export async function createTopic(prev: unknown, formData: FormData): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
+  if (!isAdmin(user)) return { ok: false, error: "Admin access required for this action" };
   const examId = str(formData.get("examId"));
   const name = str(formData.get("name"));
   if (!examId || !name) return { ok: false, error: "Topic name is required" };
@@ -201,6 +221,7 @@ export async function createTopic(prev: unknown, formData: FormData): Promise<Ac
 export async function updateTopic(prev: unknown, formData: FormData): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
+  if (!isAdmin(user)) return { ok: false, error: "Admin access required for this action" };
   const id = str(formData.get("id"));
   const name = str(formData.get("name"));
   const weightage = Math.min(100, Math.max(0, Math.round(toInt(formData.get("weightage")))));
@@ -229,6 +250,7 @@ export async function updateTopic(prev: unknown, formData: FormData): Promise<Ac
 export async function deleteTopic(id: string): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
+  if (!isAdmin(user)) return { ok: false, error: "Admin access required for this action" };
   const t = await queryOne<{ exam_id: string }>(
     `DELETE FROM topics WHERE id = $1 AND exam_id IN (SELECT id FROM exams WHERE user_id = $2) RETURNING exam_id`,
     [id, user.id]
@@ -238,11 +260,350 @@ export async function deleteTopic(id: string): Promise<ActionResult> {
   return { ok: true };
 }
 
+// ------------------------------------------------------------ syllabus import
+
+export type SyllabusPreview = {
+  nodes: SyllabusNode[];
+  /** How the tree was produced, shown above the review list. */
+  origin: string;
+  /** Weightage as imported, before the app rounds it to whole points. */
+  rawTotal: number;
+  examName: string | null;
+};
+
+function syllabusGuard(user: SessionUser | null): SessionUser | ActionResult {
+  if (!user) return guard();
+  if (!isAdmin(user)) return { ok: false, error: "Admin access required for this action" };
+  return user;
+}
+
+/** Reads a pasted or uploaded syllabus without writing anything. */
+export async function previewSyllabus(prev: unknown, formData: FormData): Promise<ActionResult> {
+  const maybeUser = await requireUser().catch(() => null);
+  const auth = syllabusGuard(maybeUser);
+  if ("ok" in auth) return auth;
+  const user = auth;
+
+  const examId = str(formData.get("examId"));
+  const owned = await queryOne(`SELECT id, title FROM exams WHERE id = $1 AND ${scoped(user, "user_id", 2)}`, [
+    examId,
+    user.id,
+  ]);
+  if (!owned) return { ok: false, error: "Exam not found" };
+
+  const existing = await query<{ name: string }>(
+    "SELECT name FROM topics WHERE exam_id = $1 ORDER BY sort_order LIMIT 200",
+    [examId]
+  );
+
+  let text = "";
+  let origin = "";
+
+  const presetId = str(formData.get("presetId"));
+  if (presetId) {
+    const preset = getPreset(presetId);
+    if (!preset) return { ok: false, error: "Unknown syllabus preset" };
+    const data: SyllabusPreview = {
+      nodes: normalizeWeights(cloneNodes(preset.nodes)),
+      origin: preset.source,
+      rawTotal: sumLeafWeight(preset.nodes),
+      examName: preset.label,
+    };
+    return { ok: true, data };
+  }
+
+  const kind = str(formData.get("kind"));
+  if (kind === "file") {
+    const file = formData.get("file");
+    if (!(file instanceof File) || file.size === 0) {
+      return { ok: false, error: "Choose a syllabus file first" };
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      return { ok: false, error: "That file is over 15MB — upload a smaller document" };
+    }
+    try {
+      text = await extractTextFromFile(Buffer.from(await file.arrayBuffer()), file.name);
+    } catch (err) {
+      return { ok: false, error: `Could not read that file: ${err instanceof Error ? err.message : "unknown error"}` };
+    }
+    origin = file.name;
+  } else {
+    text = str(formData.get("text"));
+    origin = "Pasted text";
+  }
+
+  if (text.trim().length < 20) {
+    // "Add some syllabus text" is actively misleading when a file was uploaded
+    // — it points at the paste box rather than at the file that failed to read.
+    return kind === "file"
+      ? {
+          ok: false,
+          error:
+            `No readable text came out of "${origin}". If it is a scanned or image-only PDF it has nothing to ` +
+            "extract — try the text version, or paste the topic list with its percentages.",
+        }
+      : { ok: false, error: "Add some syllabus text, or upload the exam guide" };
+  }
+  if (text.length > 60_000) text = `${text.slice(0, 60_000)}\n[truncated]`;
+
+  // A syllabus that already spells out its percentages is read directly — no
+  // model call, so it stays fast, free, and exactly faithful to the document.
+  // The blueprint shape is tried first because it is the more specific of the two.
+  const parsed = parseWeightedBlueprint(text) ?? parseSyllabusOutline(text);
+  if (parsed) {
+    const rawTotal = sumLeafWeight(parsed);
+    const data: SyllabusPreview = {
+      nodes: normalizeWeights(parsed),
+      origin: `${origin} · read directly from the document`,
+      rawTotal,
+      examName: null,
+    };
+    return { ok: true, data };
+  }
+
+  if (!(await isAiAvailable(user.id))) {
+    return {
+      ok: false,
+      error:
+        "That document has no percentages I can read, and no AI provider is configured to work them out. " +
+        "Set one up in Settings, or paste the syllabus as an outline with percentages (e.g. \"Agents — 25%\").",
+    };
+  }
+
+  try {
+    const { system, user: promptUser } = syllabusExtractPrompt({
+      text,
+      existingTopicNames: existing.map((t) => t.name),
+    });
+    const raw = await chatJson<{
+      exam?: string | null;
+      topics?: unknown;
+    }>(user.id, system, promptUser, { temperature: 0.1 });
+
+    const nodes = coerceModelTopics(raw?.topics);
+    if (nodes.length === 0) return { ok: false, error: "No topics could be read from that document" };
+
+    // Read the document's own total before normalising, so the reviewer can see
+    // how far the source percentages were from 100.
+    const rawTotal = sumLeafWeight(nodes);
+    const data: SyllabusPreview = {
+      nodes: normalizeWeights(nodes),
+      origin: `${origin} · extracted with AI`,
+      rawTotal,
+      examName: typeof raw?.exam === "string" ? raw.exam.slice(0, 160) : null,
+    };
+    return { ok: true, data };
+  } catch (err) {
+    await recordEvent(
+      user.id,
+      "error",
+      "generate",
+      "Syllabus extraction failed",
+      { error: err instanceof Error ? err.message : String(err) }
+    ).catch(() => {});
+    return { ok: false, error: err instanceof Error ? err.message : "Could not read that syllabus" };
+  }
+}
+
+/**
+ * Validates whatever a model returned into a tree we are willing to write.
+ * Depth is capped at two levels because that is all the topics table models.
+ */
+function coerceModelTopics(value: unknown): SyllabusNode[] {
+  if (!Array.isArray(value)) return [];
+  const clean = (raw: unknown, depth: number): SyllabusNode | null => {
+    if (!raw || typeof raw !== "object") return null;
+    const o = raw as Record<string, unknown>;
+    const name = typeof o.name === "string" ? o.name.trim().slice(0, 160) : "";
+    if (!name) return null;
+    const w = Number(o.weight);
+    const weight = Number.isFinite(w) ? Math.min(100, Math.max(0, w)) : 0;
+    const note = typeof o.note === "string" ? o.note.trim().slice(0, 400) || null : null;
+
+    const rawKids = depth < 1 && Array.isArray(o.children) ? o.children : [];
+    const children = rawKids.map((k) => clean(k, depth + 1)).filter((k): k is SyllabusNode => !!k);
+    // A grouping heading must not also hold weight, or its share is counted twice.
+    return { name, weight: children.length > 0 ? 0 : weight, note, children: children.length ? children : undefined };
+  };
+  return value.map((v) => clean(v, 0)).filter((n): n is SyllabusNode => !!n);
+}
+
+/** Writes a reviewed syllabus into the topics table. */
+export async function applySyllabus(prev: unknown, formData: FormData): Promise<ActionResult> {
+  const maybeUser = await requireUser().catch(() => null);
+  const auth = syllabusGuard(maybeUser);
+  if ("ok" in auth) return auth;
+  const user = auth;
+
+  const examId = str(formData.get("examId"));
+  const owned = await queryOne(`SELECT id FROM exams WHERE id = $1 AND ${scoped(user, "user_id", 2)}`, [
+    examId,
+    user.id,
+  ]);
+  if (!owned) return { ok: false, error: "Exam not found" };
+
+  let incoming: SyllabusNode[];
+  try {
+    const parsed: unknown = JSON.parse(str(formData.get("plan")) || "[]");
+    incoming = coerceModelTopics(parsed);
+  } catch {
+    return { ok: false, error: "The reviewed syllabus could not be read — try importing it again" };
+  }
+  if (incoming.length === 0) return { ok: false, error: "There are no topics to save" };
+  if (incoming.length > 60) {
+    return { ok: false, error: `That is ${incoming.length} topics — the limit is 60. Split the syllabus into two exams.` };
+  }
+
+  const nodes = normalizeWeights(incoming);
+  const mode = str(formData.get("mode")) === "merge" ? "merge" : "replace";
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    if (mode === "replace") {
+      // questions.topic_id is ON DELETE SET NULL, so this unlinks the question
+      // bank from the old tree rather than deleting any questions.
+      await client.query("DELETE FROM topics WHERE exam_id = $1", [examId]);
+    }
+
+    let order = 0;
+    for (const node of nodes) {
+      const parentId = await upsertTopic(client, examId, node, null, mode, order++);
+      const children = node.children ?? [];
+      for (let i = 0; i < children.length; i++) {
+        await upsertTopic(client, examId, children[i], parentId, mode, order++);
+        void i;
+      }
+    }
+
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    return { ok: false, error: err instanceof Error ? err.message : "Could not save the syllabus" };
+  } finally {
+    client.release();
+  }
+
+  revalidatePath(`/exams/${examId}`);
+  revalidatePath("/exams");
+  revalidatePath("/mock");
+  revalidatePath("/dashboard");
+  return {
+    ok: true,
+    data: {
+      topics: flattenSyllabus(nodes).length,
+      total: sumLeafWeight(nodes),
+    },
+  };
+}
+
+/**
+ * Inserts a topic, or updates the existing one with the same name. Re-importing a
+ * syllabus therefore refreshes weightage in place instead of creating a second
+ * copy of every topic and orphaning the questions filed against it.
+ */
+async function upsertTopic(
+  client: PoolClient,
+  examId: string,
+  node: SyllabusNode,
+  parentId: string | null,
+  mode: "merge" | "replace",
+  order: number
+): Promise<string> {
+  if (mode === "merge") {
+    const { rows } = await client.query(
+      `INSERT INTO topics (exam_id, name, weightage, description, sort_order, parent_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (exam_id, parent_id, lower(name)) WHERE parent_id IS NOT NULL
+       DO UPDATE SET weightage = EXCLUDED.weightage,
+                     description = COALESCE(EXCLUDED.description, topics.description),
+                     sort_order = EXCLUDED.sort_order
+       RETURNING id`,
+      [examId, node.name, node.weight, node.note ?? null, order, parentId]
+    );
+    if (rows[0]) return rows[0].id;
+  }
+
+  // Top-level topics have no unique index (subtopics are what collide), so they
+  // are matched by name before inserting.
+  const existing = await client.query<{ id: string }>(
+    parentId === null
+      ? `SELECT id FROM topics WHERE exam_id = $1 AND parent_id IS NULL AND lower(name) = lower($2)`
+      : `SELECT id FROM topics WHERE exam_id = $1 AND parent_id = $2 AND lower(name) = lower($3)`,
+    parentId === null ? [examId, node.name] : [examId, parentId, node.name]
+  );
+  if (existing.rows[0]) {
+    await client.query("UPDATE topics SET weightage = $1, description = $2, sort_order = $3 WHERE id = $4", [
+      node.weight,
+      node.note ?? null,
+      order,
+      existing.rows[0].id,
+    ]);
+    return existing.rows[0].id;
+  }
+
+  const { rows } = await client.query<{ id: string }>(
+    `INSERT INTO topics (exam_id, name, weightage, description, sort_order, parent_id)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    [examId, node.name, node.weight, node.note ?? null, order, parentId]
+  );
+  return rows[0].id;
+}
+
+/** Rescales an existing plan so its weights come back to exactly 100. */
+export async function balanceTopicWeights(input: { examId: string }): Promise<ActionResult> {
+  const maybeUser = await requireUser().catch(() => null);
+  const auth = syllabusGuard(maybeUser);
+  if ("ok" in auth) return auth;
+  const user = auth;
+
+  const owned = await queryOne(`SELECT id FROM exams WHERE id = $1 AND ${scoped(user, "user_id", 2)}`, [
+    input.examId,
+    user.id,
+  ]);
+  if (!owned) return { ok: false, error: "Exam not found" };
+
+  const topics = await query<WeightedTopic>(
+    `SELECT id, name, weightage, parent_id AS "parentId" FROM topics WHERE exam_id = $1 ORDER BY sort_order`,
+    [input.examId]
+  );
+  if (topics.length === 0) return { ok: false, error: "This exam has no topics yet" };
+
+  const leaves = leafTopicIds(topics);
+  const scaling = normalizeWeights(
+    topics.filter((t) => leaves.has(t.id)).map((t) => ({ name: t.name, weight: t.weightage }))
+  );
+  const byName = new Map(scaling.map((n) => [n.name.toLowerCase(), n.weight]));
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const t of topics) {
+      if (!leaves.has(t.id)) continue;
+      const weight = byName.get(t.name.toLowerCase());
+      if (weight !== undefined && weight !== t.weightage) {
+        await client.query("UPDATE topics SET weightage = $1 WHERE id = $2", [weight, t.id]);
+      }
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    return { ok: false, error: err instanceof Error ? err.message : "Could not rebalance weightage" };
+  } finally {
+    client.release();
+  }
+
+  revalidatePath(`/exams/${input.examId}`);
+  return { ok: true, data: { total: totalAssignedWeight(topics) } };
+}
+
+
 // ---------------------------------------------------------------- materials
 
 export async function createKnowledgeBase(prev: unknown, formData: FormData): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
+  if (!isAdmin(user)) return { ok: false, error: "Admin access required for this action" };
   const name = str(formData.get("name"));
   if (!name) return { ok: false, error: "A name is required" };
   const description = str(formData.get("description")) || null;
@@ -257,6 +618,7 @@ export async function createKnowledgeBase(prev: unknown, formData: FormData): Pr
 export async function deleteKnowledgeBase(id: string, opts?: { keepMaterials?: boolean }): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
+  if (!isAdmin(user)) return { ok: false, error: "Admin access required for this action" };
   const owned = await queryOne(`SELECT id FROM knowledge_bases WHERE id = $1 AND ${scoped(user, "user_id", 2)}`, [id, user.id]);
   if (!owned) return { ok: false, error: "Knowledge base not found" };
   if (!opts?.keepMaterials) {
@@ -319,6 +681,7 @@ async function storeMaterial(
 export async function addMaterials(prev: unknown, formData: FormData): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
+  if (!isAdmin(user)) return { ok: false, error: "Admin access required for this action" };
   const examId = str(formData.get("examId")) || null;
   let knowledgeBaseId = str(formData.get("knowledgeBaseId")) || null;
   const kind = str(formData.get("kind")); // text | url | file
@@ -478,6 +841,7 @@ export async function addMaterials(prev: unknown, formData: FormData): Promise<A
 export async function deleteMaterial(id: string): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
+  if (!isAdmin(user)) return { ok: false, error: "Admin access required for this action" };
   const owned = await queryOne(`SELECT id FROM materials WHERE id = $1 AND ${scoped(user, "user_id", 2)}`, [id, user.id]);
   if (!owned) return { ok: false, error: "Material not found" };
   await query("DELETE FROM materials WHERE id = $1", [id]);
@@ -490,6 +854,7 @@ export async function deleteMaterial(id: string): Promise<ActionResult> {
 export async function addQuestion(prev: unknown, formData: FormData): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
+  if (!isAdmin(user)) return { ok: false, error: "Admin access required for this action" };
   const examId = str(formData.get("examId")) || null;
   const topicId = str(formData.get("topicId")) || null;
   const type = str(formData.get("type")) || "mcq";
@@ -539,6 +904,7 @@ export async function addQuestion(prev: unknown, formData: FormData): Promise<Ac
 export async function deleteQuestion(id: string): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
+  if (!isAdmin(user)) return { ok: false, error: "Admin access required for this action" };
   const owned = await queryOne(`SELECT id FROM questions WHERE id = $1 AND ${scoped(user, "user_id", 2)}`, [id, user.id]);
   if (!owned) return { ok: false, error: "Question not found" };
   await query("DELETE FROM questions WHERE id = $1", [id]);
@@ -555,6 +921,7 @@ export async function deleteQuestion(id: string): Promise<ActionResult> {
 export async function setQuestionTopic(questionId: string, topicId: string | null): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
+  if (!isAdmin(user)) return { ok: false, error: "Admin access required for this action" };
   const owned = await queryOne<{ id: string }>(
     `SELECT id FROM questions WHERE id = $1 AND ${scoped(user, "user_id", 2)}`,
     [questionId, user.id]
@@ -582,6 +949,7 @@ export async function generateQuestions(input: {
 }): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
+  if (!isAdmin(user)) return { ok: false, error: "Admin access required for this action" };
   const count = Math.min(MAX_GEN, Math.max(1, Math.round(input.count || 10)));
   if (!["mcq", "true_false", "short"].includes(input.type)) {
     return { ok: false, error: "Pick mcq, true/false or short answer" };
@@ -653,6 +1021,7 @@ export async function generateFlashcards(input: {
 }): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
+  if (!isAdmin(user)) return { ok: false, error: "Admin access required for this action" };
   const count = Math.min(MAX_GEN, Math.max(1, Math.round(input.count || 10)));
   try {
     let kbId = input.knowledgeBaseId || null;
@@ -705,6 +1074,7 @@ export async function addFlashcard(input: {
 }): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
+  if (!isAdmin(user)) return { ok: false, error: "Admin access required for this action" };
   if (!input.front || !input.back) return { ok: false, error: "Both sides of the card are required" };
   await query(
     `INSERT INTO flashcards (user_id, exam_id, topic_id, front, back, source) VALUES ($1, $2, $3, $4, $5, 'manual')`,
@@ -717,6 +1087,7 @@ export async function addFlashcard(input: {
 export async function deleteFlashcard(id: string): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
+  if (!isAdmin(user)) return { ok: false, error: "Admin access required for this action" };
   const owned = await queryOne(`SELECT id FROM flashcards WHERE id = $1 AND ${scoped(user, "user_id", 2)}`, [id, user.id]);
   if (!owned) return { ok: false, error: "Card not found" };
   await query("DELETE FROM flashcards WHERE id = $1", [id]);
@@ -770,10 +1141,14 @@ async function buildQuestionPool(
   user: SessionUser,
   examId: string | null
 ): Promise<QuizQuestion[]> {
+  const visibility = isAdmin(user)
+    ? scoped(user, "user_id")
+    : `(user_id = $1 OR exam_id IN (SELECT exam_id FROM content_grants WHERE user_id = $1 AND exam_id IS NOT NULL)
+        OR (exam_id IS NULL AND EXISTS (SELECT 1 FROM content_grants WHERE user_id = $1 AND exam_id IS NULL)))`;
   const rows = await query<QuizQuestion & { choices: QuizQuestion["choices"] }>(
     `SELECT id, type, category, prompt, choices, answer, explanation, topic_id AS "topicId", points
      FROM questions
-     WHERE ${scoped(user, "user_id")} AND ($2::uuid IS NULL OR exam_id = $2) AND type IN ('mcq','true_false','short')
+     WHERE ${visibility} AND ($2::uuid IS NULL OR exam_id = $2) AND type IN ('mcq','true_false','short')
      ORDER BY random()`,
     [user.id, examId]
   );
@@ -793,8 +1168,12 @@ export async function createQuiz(input: {
 }): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
-  if (input.examId) {
-    const owned = await queryOne(`SELECT id FROM exams WHERE id = $1 AND ${scoped(user, "user_id", 2)}`, [input.examId, user.id]);
+  if (input.examId && !isAdmin(user)) {
+    const owned = await queryOne(
+      `SELECT id FROM exams WHERE id = $1 AND
+         (user_id = $2 OR id IN (SELECT exam_id FROM content_grants WHERE user_id = $2 AND exam_id IS NOT NULL))`,
+      [input.examId, user.id]
+    );
     if (!owned) return { ok: false, error: "Exam not found" };
   }
   const mode = input.mode ?? "quiz";
@@ -988,24 +1367,40 @@ export async function createMock(input: { examId: string; count: number }): Prom
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
   const count = Math.min(50, Math.max(5, Math.round(input.count || 20)));
-  const exam = await queryOne<{ id: string; title: string }>(
-    `SELECT id, title FROM exams WHERE id = $1 AND ${scoped(user, "user_id", 2)}`,
-    [input.examId, user.id]
-  );
+  const exam = isAdmin(user)
+    ? await queryOne<{ id: string; title: string }>("SELECT id, title FROM exams WHERE id = $1", [input.examId])
+    : await queryOne<{ id: string; title: string }>(
+        `SELECT id, title FROM exams WHERE id = $1 AND
+           (user_id = $2 OR id IN (SELECT exam_id FROM content_grants WHERE user_id = $2 AND exam_id IS NOT NULL))`,
+        [input.examId, user.id]
+      );
   if (!exam) return { ok: false, error: "Exam not found" };
 
-  const topics = await query<{ id: string; name: string; weightage: number }>(
-    "SELECT id, name, weightage FROM topics WHERE exam_id = $1 ORDER BY sort_order",
+  const topics = await query<WeightedTopic>(
+    `SELECT id, name, weightage, parent_id AS "parentId" FROM topics WHERE exam_id = $1 ORDER BY sort_order`,
     [input.examId]
   );
-  const totalWeight = topics.reduce((s, t) => s + t.weightage, 0) || 1;
+  // Parents are containers, so only the leaves are allocated questions — counting
+  // a domain and its skills together would ask for far more than `count`.
+  const leaves = topics.filter((t) => leafTopicIds(topics).has(t.id));
+  const totalWeight = leaves.reduce((s, t) => s + t.weightage, 0);
 
   const pool = await buildQuestionPool(user, input.examId);
   const selected: QuizQuestion[] = [];
   const used = new Set<string>();
 
-  for (const topic of topics) {
-    const target = Math.round((count * topic.weightage) / totalWeight);
+  // Heaviest topic first, so when a topic's bank runs dry the questions it does
+  // have go to the share that matters most instead of being spent on a 1% topic.
+  const quota = allocateByWeight(
+    leaves.map((t) => t.weightage),
+    count
+  );
+  const ordered = leaves
+    .map((topic, i) => ({ topic, target: quota[i] ?? 0 }))
+    .sort((a, b) => b.target - a.target || a.topic.name.localeCompare(b.topic.name));
+
+  for (const { topic, target } of ordered) {
+    if (target <= 0) continue;
     const topicQs = pool.filter((q) => q.topicId === topic.id && !used.has(q.id));
     const take = Math.min(target, topicQs.length);
     topicQs.slice(0, take).forEach((q) => {
@@ -1017,7 +1412,6 @@ export async function createMock(input: { examId: string; count: number }): Prom
   // Fill anything still missing, weighted toward the highest-weightage topics
   let remaining = count - selected.length;
   const fillPool = pool.filter((q) => !used.has(q.id));
-  const orderedByWeight = [...topics].sort((a, b) => b.weightage - a.weightage);
   for (const q of fillPool) {
     if (remaining <= 0) break;
     selected.push(q);
@@ -1027,7 +1421,7 @@ export async function createMock(input: { examId: string; count: number }): Prom
   // AI top-up if the bank still can't fill the mock
   let aiAdded = 0;
   if (remaining > 0) {
-    const topicFor = orderedByWeight.length > 0 ? orderedByWeight[0] : null;
+    const topicFor = ordered.find((o) => o.target > 0)?.topic ?? ordered[0]?.topic ?? null;
     const missing = await generateFromAI({
       userId: user.id,
       examId: input.examId,
@@ -1060,7 +1454,15 @@ export async function createMock(input: { examId: string; count: number }): Prom
   if (!session) return { ok: false, error: "Could not create mock exam" };
   revalidatePath("/mock");
   revalidatePath("/dashboard");
-  return { ok: true, id: session.id, data: { aiAdded } };
+  // A plan whose topics are all 0% silently produces a uniform random paper, so
+  // say so rather than letting the result screen claim a per-topic breakdown.
+  const warning =
+    totalWeight <= 0 && topics.length > 0
+      ? "This exam's topics have no weightage, so this mock was drawn evenly at random. Add % weightage to your topics to weight it properly."
+      : aiAdded > 0
+        ? `${aiAdded} question${aiAdded === 1 ? " was" : "s were"} generated to fill the paper — your bank did not have enough.`
+        : undefined;
+  return { ok: true, id: session.id, data: { aiAdded }, warning };
 }
 
 export async function submitMock(sessionId: string, answers: SubmittedAnswer[]): Promise<ActionResult> {
@@ -1083,6 +1485,14 @@ export async function startInterview(input: {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
   const count = Math.min(10, Math.max(1, Math.round(input.count || 5)));
+  if (input.examId && !isAdmin(user)) {
+    const owned = await queryOne(
+      `SELECT id FROM exams WHERE id = $1 AND
+         (user_id = $2 OR id IN (SELECT exam_id FROM content_grants WHERE user_id = $2 AND exam_id IS NOT NULL))`,
+      [input.examId, user.id]
+    );
+    if (!owned) return { ok: false, error: "Exam not found" };
+  }
   const available = await isAiAvailable(user.id);
   if (!available) {
     return { ok: false, error: "AI service is not reachable. Start Ollama or configure AI_BASE_URL." };
@@ -1194,6 +1604,77 @@ export async function logStudy(seconds: number): Promise<ActionResult> {
 export async function aiStatus(): Promise<ActionResult> {
   const boat = await isAiAvailable();
   return boat ? { ok: true, data: { available: true } } : { ok: true, data: { available: false } };
+}
+
+// ---------------------------------------------------------------- user roles (admin)
+
+/** Admin-only: promote or demote an account. Protects against self-lockout. */
+export async function setUserRole(userId: string, role: string): Promise<ActionResult> {
+  const user = await requireUser().catch(() => null);
+  if (!user) return guard();
+  if (!isAdmin(user)) return { ok: false, error: "Admin access required for this action" };
+  if (user.id === userId) return { ok: false, error: "You cannot change your own role" };
+  if (role !== "admin" && role !== "user") return { ok: false, error: "Invalid role" };
+
+  const target = await queryOne<{ id: string; role: string }>("SELECT id, role FROM users WHERE id = $1", [userId]);
+  if (!target) return { ok: false, error: "User not found" };
+  if (target.role === role) return { ok: true };
+
+  if (role === "user") {
+    const admins = await query<{ id: string }>("SELECT id FROM users WHERE role = 'admin'");
+    if (admins.length <= 1) return { ok: false, error: "Cannot demote the last admin account" };
+  }
+
+  await query("UPDATE users SET role = $1 WHERE id = $2", [role, userId]);
+  revalidatePath("/users");
+  revalidatePath("/", "layout");
+  return { ok: true };
+}
+
+/** Admin-only: approve or revoke a user's access. Admins bypass approval. */
+export async function setUserApproval(userId: string, approved: boolean): Promise<ActionResult> {
+  const user = await requireUser().catch(() => null);
+  if (!user) return guard();
+  if (!isAdmin(user)) return { ok: false, error: "Admin access required for this action" };
+  if (user.id === userId) return { ok: true };
+  const target = await queryOne<{ role: string }>("SELECT role FROM users WHERE id = $1", [userId]);
+  if (!target) return { ok: false, error: "User not found" };
+  if (target.role === "admin") return { ok: true };
+  await query("UPDATE users SET approved = $1 WHERE id = $2", [approved, userId]);
+  revalidatePath("/users");
+  revalidatePath("/", "layout");
+  return { ok: true };
+}
+
+/** Admin-only: grant or revoke a user's access to an exam (or the general bank when examId is null). */
+export async function setContentGrant(
+  userId: string,
+  examId: string | null,
+  granted: boolean
+): Promise<ActionResult> {
+  const user = await requireUser().catch(() => null);
+  if (!user) return guard();
+  if (!isAdmin(user)) return { ok: false, error: "Admin access required for this action" };
+  const target = await queryOne<{ id: string }>("SELECT id FROM users WHERE id = $1", [userId]);
+  if (!target) return { ok: false, error: "User not found" };
+  if (examId) {
+    const exam = await queryOne<{ id: string }>("SELECT id FROM exams WHERE id = $1", [examId]);
+    if (!exam) return { ok: false, error: "Exam not found" };
+  }
+  if (granted) {
+    await query(
+      "INSERT INTO content_grants (user_id, exam_id, granted_by) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+      [userId, examId, user.id]
+    );
+  } else {
+    await query(
+      "DELETE FROM content_grants WHERE user_id = $1 AND exam_id IS NOT DISTINCT FROM $2",
+      [userId, examId]
+    );
+  }
+  revalidatePath("/users");
+  revalidatePath("/", "layout");
+  return { ok: true };
 }
 
 // ---------------------------------------------------------------- settings

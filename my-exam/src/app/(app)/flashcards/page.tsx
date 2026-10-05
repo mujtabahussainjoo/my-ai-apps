@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { Layers, Flame } from "lucide-react";
-import { getCurrentUser } from "@/lib/auth";
+import { getCurrentUser, isAdmin } from "@/lib/auth";
 import { listExams, listTopics, listFlashcards, listKnowledgeBases, listMaterials } from "@/lib/data";
 import { now } from "@/lib/db";
 import { EmptyState } from "@/components/ui";
@@ -73,16 +73,22 @@ export default async function FlashcardsPage() {
 
       <div className="grid gap-6 lg:grid-cols-[340px_1fr]">
         <div className="space-y-5">
-          {knowledgeBases.length > 0 || activeExam ? (
+          {isAdmin(user) && (knowledgeBases.length > 0 || activeExam) ? (
             <>
               <GenerateFlashcardsPanel examId={activeExam?.id ?? ""} knowledgeBases={knowledgeBases} topics={topics} materials={await listMaterials()} />
               {activeExam ? <AddFlashcardForm examId={activeExam.id} topics={topics} /> : null}
             </>
-          ) : (
+          ) : isAdmin(user) ? (
             <EmptyState
               icon={<Layers className="h-6 w-6" />}
               title="Create an exam or knowledge base first"
               description="Flashcards are generated from your training materials — add a knowledge base on the Materials page, or create an exam."
+            />
+          ) : (
+            <EmptyState
+              icon={<Layers className="h-6 w-6" />}
+              title="Read-only"
+              description="Only admins can generate or add flashcards — you can review the deck on the right whenever cards are due."
             />
           )}
         </div>
@@ -95,7 +101,7 @@ export default async function FlashcardsPage() {
               description="Generate a deck from your training materials, or add your own cards."
             />
           ) : (
-            <DeckPlayground dueCards={dueCards} recentCards={recentCards} />
+            <DeckPlayground dueCards={dueCards} recentCards={recentCards} canEdit={isAdmin(user)} />
           )}
         </div>
       </div>

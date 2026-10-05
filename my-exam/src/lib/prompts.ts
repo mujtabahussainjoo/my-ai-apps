@@ -170,6 +170,40 @@ export function interviewFeedbackPrompt(opts: {
 const INTERVIEW_CATEGORIES = ["behavioral", "technical", "scenario", "hr"];
 export { INTERVIEW_CATEGORIES };
 
+/**
+ * Turns an uploaded or pasted syllabus into a topic tree carrying each topic's
+ * share of the exam.
+ *
+ * Two things this prompt is careful about. Weights are asked for as decimals on
+ * the leaves only — a domain that has children must not also carry weight, or
+ * the plan double-counts and lands well over 100. And when the document states
+ * no percentages at all, the model is told to infer weights from depth and
+ * emphasis rather than inventing precise-looking numbers.
+ */
+export function syllabusExtractPrompt(opts: {
+  text: string;
+  existingTopicNames: string[];
+}): { system: string; user: string } {
+  const system =
+    "You convert an exam syllabus into a weighted topic tree. You are precise about numbers and never invent a percentage that the document does not support." +
+    " WEIGHTAGE RULES: (1) Only leaf topics carry a weight. A topic that has children is a grouping heading and must have weight 0. " +
+    "(2) Use the percentages printed in the document when it has them. Keep their decimals, e.g. 33.1. " +
+    "(3) If the document gives no percentages, infer a split from how the document is organised and how much text each section gets, then round to whole numbers; it is better to be approximately right and clearly inferred than to be falsely precise. " +
+    "(4) The weights of all leaf topics must add up to 100. Adjust the largest leaf if your draft does not. " +
+    "(5) Prefer 5 to 12 top-level topics and 2 to 6 subtopics each; merge trivia, split anything oversized. " +
+    "Return JSON only: {\"exam\": string|null, \"topics\": [{\"name\": string, \"weight\": number, \"note\": string|null, \"children\": [{\"name\": string, \"weight\": number, \"note\": string|null}]}]}. " +
+    "Set \"exam\" to the certification name when the document states one. Leave a note only when the document says something about that topic worth keeping.";
+
+  const known = opts.existingTopicNames.length
+    ? `\n\nThese topics already exist in this exam plan: ${opts.existingTopicNames
+        .slice(0, 40)
+        .join(", ")}. Reuse those exact names where the syllabus covers the same idea, so existing questions stay attached to their topic.`
+    : "";
+
+  const user = `=== SYLLABUS ===\n"""\n${opts.text}\n"""\n${known}\n\nExtract the topic tree with weightage.`;
+  return { system, user };
+}
+
 export function assistantSystemPrompt(ctx: { index: number; title: string; content: string }[]): string {
   const ref = ctx.length
     ? ctx.map((c) => `[${c.index}] ${c.title}\n${c.content}`).join("\n\n---\n\n")

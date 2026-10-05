@@ -5,6 +5,7 @@ import { getQuizSession, parseQuestions, parseAnswers, listTopics } from "@/lib/
 import { ResultView, type ResultItem } from "@/components/result-view";
 import { Card, Progress } from "@/components/ui";
 import { colorForIndex } from "@/lib/utils";
+import { leafTopicIds } from "@/lib/syllabus";
 
 export const dynamic = "force-dynamic";
 
@@ -31,7 +32,9 @@ export default async function MockResultPage({ params }: { params: Promise<{ id:
   });
 
   const topics = session.examId ? await listTopics(session.examId) : [];
-  const totalWeight = topics.reduce((s, t) => s + t.weightage, 0) || 1;
+  const leafIds = leafTopicIds(topics);
+  const leaves = topics.filter((t) => leafIds.has(t.id));
+  const totalWeight = leaves.reduce((s, t) => s + t.weightage, 0);
   const overallPct = session.total > 0 ? (session.score / session.total) * 100 : 0;
 
   const byTopic = topics
@@ -40,11 +43,10 @@ export default async function MockResultPage({ params }: { params: Promise<{ id:
       const points = inTopic.reduce((s, it) => s + (it.answer.points ?? 1), 0);
       const got = inTopic.reduce((s, it) => s + (it.answer.got ?? 0), 0);
       const pct = points > 0 ? (got / points) * 100 : null;
-      const expected = Math.round((t.weightage / totalWeight) * session.total);
       return {
         name: t.name,
-        weightage: t.weightage,
-        expected,
+        // A parent is a container, so it carries no share of its own.
+        weightage: leafIds.has(t.id) ? t.weightage : 0,
         questions: inTopic.length,
         points,
         got,
@@ -54,8 +56,12 @@ export default async function MockResultPage({ params }: { params: Promise<{ id:
     })
     .filter((t) => t.questions > 0);
 
+  // Weighting only the leaves avoids counting a domain and its skills together,
+  // which would otherwise report a score above 100%.
   const estimate =
-    byTopic.reduce((s, t) => s + (t.pct ?? 0) * t.weightage, 0) / totalWeight;
+    totalWeight > 0
+      ? byTopic.reduce((s, t) => s + (t.pct ?? 0) * t.weightage, 0) / totalWeight
+      : overallPct;
 
   return (
     <div className="space-y-6">

@@ -137,14 +137,23 @@ export default async function QuestionBankPage({
 
       <div className="grid gap-6 lg:grid-cols-[360px_1fr]">
         <div className="space-y-5">
-          <GenerateQuestionsPanel
-            exams={exams.map((e) => ({ id: e.id, title: e.title }))}
-            examId={activeExam}
-            knowledgeBases={await listKnowledgeBases()}
-            topicsByExam={topicsByExam}
-            materials={await listMaterials()}
-          />
-          <ManualQuestionForm examId={activeExam} exams={exams.map((e) => ({ id: e.id, title: e.title }))} topicsByExam={topicsByExam} />
+          {isAdmin(user) ? (
+            <>
+              <GenerateQuestionsPanel
+                exams={exams.map((e) => ({ id: e.id, title: e.title }))}
+                examId={activeExam}
+                knowledgeBases={await listKnowledgeBases()}
+                topicsByExam={topicsByExam}
+                materials={await listMaterials()}
+              />
+              <ManualQuestionForm examId={activeExam} exams={exams.map((e) => ({ id: e.id, title: e.title }))} topicsByExam={topicsByExam} />
+            </>
+          ) : (
+            <Card className="border-dashed p-4 text-sm text-foreground/55">
+              Read-only. Only admins can generate or edit questions — you can browse the bank above and practise any of
+              them.
+            </Card>
+          )}
         </div>
 
         <div>
@@ -206,7 +215,11 @@ export default async function QuestionBankPage({
             <EmptyState
               icon={<NotebookPen className="h-6 w-6" />}
               title="No questions here"
-              description="Use AI generation to build a question bank from your materials, or add questions by hand."
+              description={
+                isAdmin(user)
+                  ? "Use AI generation to build a question bank from your materials, or add questions by hand."
+                  : "No questions match these filters. Try clearing them, or use the Practice button to top up from AI."
+              }
             />
           ) : (
             <div className="space-y-3">
@@ -259,8 +272,8 @@ export default async function QuestionBankPage({
                         )}
                       </div>
                       <div className="flex shrink-0 flex-col items-end gap-2">
-                        <DeleteQuestionButton id={q.id} />
-                        <QuestionTopicSelect questionId={q.id} topics={topicTree} value={q.topicId} />
+                        {isAdmin(user) && <DeleteQuestionButton id={q.id} />}
+                        {isAdmin(user) && <QuestionTopicSelect questionId={q.id} topics={topicTree} value={q.topicId} />}
                       </div>
                     </div>
                   </Card>

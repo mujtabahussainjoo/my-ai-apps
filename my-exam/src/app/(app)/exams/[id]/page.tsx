@@ -1,13 +1,15 @@
 import Link from "next/link";
 import { redirect, notFound } from "next/navigation";
-import { ArrowLeft, Tags, CircleHelp } from "lucide-react";
-import { getCurrentUser } from "@/lib/auth";
+import { ArrowLeft, Tags, CircleHelp, CheckCircle2, Upload } from "lucide-react";
+import { getCurrentUser, isAdmin } from "@/lib/auth";
 import { getExam, listTopicTree, listMaterials, listQuestions, listKnowledgeBases, type TopicNode } from "@/lib/data";
 import { getMasteryForExam } from "@/lib/stats";
 import { Card, Badge, Progress } from "@/components/ui";
 import { WeightagePie, MasteryBars } from "@/components/charts";
 import { DeleteExamButton, AddTopicForm, EditTopicRow } from "@/components/exam-forms";
 import { ExamAIzAction, ExamTestActions } from "@/components/exam-actions";
+import { SyllabusImporter } from "@/components/syllabus-importer";
+import { totalAssignedWeight, weightsAreBalanced } from "@/lib/syllabus";
 import { colorForIndex, formatDate } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -29,9 +31,17 @@ export default async function ExamDetailPage({ params }: { params: Promise<{ id:
   const topics = flattenTree(tree);
   const topLevel = tree;
 
-  const pieData = topics.map((t, i) => ({ name: t.name, value: t.weightage, color: colorForIndex(i) }));
+  // The donut and the total both read from the leaves, because a parent topic is
+  // a heading whose value is the sum of its children — charting both would show
+  // every domain twice and push the total past 100.
+  const leaves = topics.filter((t) => !topics.some((c) => c.parentId === t.id));
+  const weightSum = totalAssignedWeight(topics);
+  const balanced = weightsAreBalanced(topics);
+
+  const pieData = leaves.map((t, i) => ({ name: t.name, value: t.weightage, color: colorForIndex(i) }));
   const masteryData = mastery.map((m, i) => ({ ...m, color: colorForIndex(i) }));
-  const weightSum = topics.reduce((s, t) => s + t.weightage, 0);
+
+  const admin = isAdmin(user);
 
   return (
     <div className="space-y-6">
@@ -45,7 +55,15 @@ export default async function ExamDetailPage({ params }: { params: Promise<{ id:
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-2xl font-bold tracking-tight">{exam.title}</h1>
-              {weightSum !== 100 && (
+              {topics.length === 0 ? (
+                <Badge color="sky">
+                  <Upload className="h-3 w-3" /> no syllabus yet
+                </Badge>
+              ) : balanced ? (
+                <Badge color="emerald">
+                  <CheckCircle2 className="h-3 w-3" /> weights sum to 100%
+                </Badge>
+              ) : (
                 <Badge color="amber">
                   <CircleHelp className="h-3 w-3" /> weights sum to {weightSum}%
                 </Badge>
@@ -59,7 +77,7 @@ export default async function ExamDetailPage({ params }: { params: Promise<{ id:
               <Badge color="slate">{materials.length} training sources</Badge>
             </div>
           </div>
-          <DeleteExamButton examId={id} />
+          {admin ? <DeleteExamButton examId={id} /> : null}
         </div>
       </header>
 
@@ -70,11 +88,18 @@ export default async function ExamDetailPage({ params }: { params: Promise<{ id:
           <div className="mb-4 flex items-center gap-2">
             <Tags className="h-4 w-4 text-violet-300" />
             <h2 className="font-semibold">Topic weightage</h2>
+            {topics.length > 0 && (
+              <span className="ml-auto text-xs text-foreground/55">{leaves.length} weighted topics</span>
+            )}
           </div>
           <WeightagePie data={pieData} />
-          {topics.length === 0 && (
-            <p className="mt-3 text-sm text-foreground/55">Add topics below to see the weightage breakdown.</p>
-          )}
+          {topics.length === 0 ? (
+            <p className="mt-3 text-sm text-foreground/55">Add topics below, or import your syllabus to see the weightage breakdown.</p>
+          ) : !balanced ? (
+            <p className="mt-3 text-sm text-amber-300/85">
+              Weightage adds up to {weightSum}%. Rebalance it and mocks will match the real paper more closely.
+            </p>
+          ) : null}
         </Card>
 
         <Card>
@@ -89,32 +114,45 @@ export default async function ExamDetailPage({ params }: { params: Promise<{ id:
       <section className="grid gap-6 lg:grid-cols-[1fr_340px]">
         <div>
           <h2 className="mb-3 text-lg font-semibold">Topics</h2>
-          <div className="mb-4">
-            <AddTopicForm examId={id} topics={topics} />
-          </div>
+          {admin && (
+            <div className="mb-4">
+              <AddTopicForm examId={id} topics={topics} />
+            </div>
+          )}
           <div className="space-y-2">
             {topics.length === 0 && (
               <Card className="border-dashed text-sm text-foreground/55">
-                No topics yet. Add a topic like “LLMs”, with subtopics under it like “How LLMs Behave” — give each a % weightage.
+                {admin
+                  ? "No topics yet. Add a topic like “LLMs”, with subtopics under it like “How LLMs Behave” — give each a % weightage."
+                  : "No topics have been added to this exam yet."}
               </Card>
             )}
-            <TopicTree nodes={topLevel} examId={id} allTopics={topics} />
+            <TopicTree nodes={topLevel} examId={id} allTopics={topics} canEdit={admin} />
             {topics.length > 0 && (
               <div className="pt-1">
                 <div className="mb-1 flex justify-between text-xs text-foreground/55">
                   <span>Total assigned weight</span>
-                  <span className={weightSum === 100 ? "font-bold text-emerald-400" : "font-bold text-amber-400"}>
+                  <span className={balanced ? "font-bold text-emerald-400" : "font-bold text-amber-400"}>
                     {weightSum}% / 100%
                   </span>
                 </div>
-                <Progress value={Math.min(100, weightSum)} color={weightSum === 100 ? "#10b981" : "#f59e0b"} />
+                <Progress value={Math.min(100, weightSum)} color={balanced ? "#10b981" : "#f59e0b"} />
               </div>
             )}
           </div>
         </div>
 
         <div className="space-y-6">
-          <ExamAIzAction examId={id} knowledgeBases={knowledgeBases} />
+          {admin && (
+            <SyllabusImporter
+              examId={id}
+              examTitle={exam.title}
+              topicCount={topics.length}
+              currentTotal={weightSum}
+            />
+          )}
+
+          {admin ? <ExamAIzAction examId={id} knowledgeBases={knowledgeBases} /> : null}
 
           <Card>
             <h3 className="mb-3 font-semibold">Your question bank</h3>
@@ -159,50 +197,66 @@ function TopicTree({
   nodes,
   examId,
   allTopics,
+  canEdit,
 }: {
   nodes: TopicNode[];
   examId: string;
   allTopics: TopicNode[];
+  canEdit: boolean;
 }) {
   return (
     <>
       {nodes.map((t) => (
         <div key={t.id} className="space-y-2">
-          <EditTopicRow
-            id={t.id}
-            examId={examId}
-            name={t.name}
-            weightage={t.weightage}
-            description={t.description}
-            parentId={t.parentId}
-            topics={allTopics}
-          />
+          {canEdit ? (
+            <EditTopicRow
+              id={t.id}
+              examId={examId}
+              name={t.name}
+              weightage={t.weightage}
+              description={t.description}
+              parentId={t.parentId}
+              topics={allTopics}
+            />
+          ) : (
+            <ReadOnlyTopicRow name={t.name} weightage={t.weightage} description={t.description} />
+          )}
           {t.children.length > 0 && (
             <div className="ml-6 space-y-2 border-l border-white/10 pl-3">
               {t.children.map((c) => (
                 <div key={c.id} className="space-y-2">
-                  <EditTopicRow
-                    id={c.id}
-                    examId={examId}
-                    name={c.name}
-                    weightage={c.weightage}
-                    description={c.description}
-                    parentId={c.parentId}
-                    topics={allTopics}
-                  />
+                  {canEdit ? (
+                    <EditTopicRow
+                      id={c.id}
+                      examId={examId}
+                      name={c.name}
+                      weightage={c.weightage}
+                      description={c.description}
+                      parentId={c.parentId}
+                      topics={allTopics}
+                    />
+                  ) : (
+                    <ReadOnlyTopicRow name={c.name} weightage={c.weightage} description={c.description} />
+                  )}
                   {c.children.length > 0 && (
                     <div className="ml-6 space-y-2 border-l border-white/10 pl-3">
                       {c.children.map((gc) => (
-                        <EditTopicRow
-                          key={gc.id}
-                          id={gc.id}
-                          examId={examId}
-                          name={gc.name}
-                          weightage={gc.weightage}
-                          description={gc.description}
-                          parentId={gc.parentId}
-                          topics={allTopics}
-                        />
+                        <div key={gc.id}>
+                          {canEdit ? (
+                            <EditTopicRow
+                              key={gc.id}
+                              id={gc.id}
+                              examId={examId}
+                              name={gc.name}
+                              weightage={gc.weightage}
+                              description={gc.description}
+                              parentId={gc.parentId}
+                              topics={allTopics}
+                            />
+                          ) : (
+                            <ReadOnlyTopicRow name={gc.name} weightage={gc.weightage} description={gc.description} />
+                          )}
+                        </div>
                       ))}
                     </div>
                   )}
@@ -213,5 +267,25 @@ function TopicTree({
         </div>
       ))}
     </>
+  );
+}
+
+function ReadOnlyTopicRow({
+  name,
+  weightage,
+  description,
+}: {
+  name: string;
+  weightage: number;
+  description: string | null;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-xl border border-white/8 bg-white/3 px-4 py-3">
+      <div className="min-w-0">
+        <div className="font-medium">{name}</div>
+        {description && <p className="mt-0.5 line-clamp-2 text-xs text-foreground/55">{description}</p>}
+      </div>
+      <span className="rounded-md bg-violet-500/15 px-2 py-1 text-xs font-bold text-violet-200">{weightage}%</span>
+    </div>
   );
 }

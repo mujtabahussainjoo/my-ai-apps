@@ -19,6 +19,7 @@ import {
   X,
   FileText,
   TrendingUp,
+  Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { logoutAction } from "@/lib/actions";
@@ -74,6 +75,28 @@ export function AppShell({
           </Link>
         );
       })}
+      {isAdmin && (
+        <div className="mx-3 my-1 flex items-center gap-2 border-t border-white/8 pt-3">
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-foreground/35">Admin</span>
+        </div>
+      )}
+      {isAdmin && (
+        <Link
+          key="/users"
+          href="/users"
+          onClick={() => setOpen(false)}
+          className={cn(
+            "group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all",
+            isActive("/users")
+              ? "bg-gradient-to-r from-indigo-500/25 to-violet-500/15 text-white ring-1 ring-inset ring-violet-400/25"
+              : "text-foreground/65 hover:bg-white/6 hover:text-foreground"
+          )}
+        >
+          <Users className={cn("h-[18px] w-[18px]", isActive("/users") ? "text-violet-300" : "text-foreground/45")} />
+          Users &amp; roles
+          {isActive("/users") && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-violet-400" />}
+        </Link>
+      )}
     </nav>
   );
 

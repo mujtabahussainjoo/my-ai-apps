@@ -4,6 +4,12 @@ import { matchTopic, rankTopics } from "../src/lib/topic-match";
 import { cosine, findSemanticDuplicates } from "../src/lib/dedupe-semantic";
 import { classifyUpload, titleFromPath } from "../src/lib/material-path";
 import { parseJson } from "../src/lib/ai";
+import {
+  normalizeWeights,
+  parseSyllabusOutline,
+  parseWeightedBlueprint,
+  sumLeafWeight,
+} from "../src/lib/syllabus";
 
 let failures = 0;
 const ok = (label: string, cond: boolean) => {
@@ -287,6 +293,78 @@ ok("detects 'the diagram'", hasDanglingVisualReference("What is the main purpose
 ok("ignores 'table' as a noun", !hasDanglingVisualReference("Which table holds the scores?"));
 ok("allows fenced content", !hasDanglingVisualReference("The figure below:\n```text\na -> b\n```\nWhat flows?"));
 ok("flags raster refs", hasDanglingVisualReference("Based on the image below, what is shown?\n```text\nx\n```"));
+
+// Syllabus import. The bug these guard against: a whole exam guide was read as
+// one 0% "topic" per line (388 of them) and saved as a real syllabus, because
+// the outline parser had no plausibility check and so never fell back to AI.
+console.log("\n--- syllabus parsing");
+
+const proctoringProse = Array.from(
+  { length: 150 },
+  (_, i) =>
+    `Candidates must remain within view of the proctor and webcam for the entire session, rule ${i} of the exam.`
+).join("\n");
+ok("rejects a wall of prose (returns null)", parseSyllabusOutline(proctoringProse) === null);
+ok("rejects pdf page furniture", parseSyllabusOutline("Agents — 50%\nArchitecture — 30%\n-- 12 of 14 --") === null);
+
+// The shape Anthropic's own CCDV-F guide uses.
+const blueprintDoc = [
+  "Domain 1: Agents and Workflows (14.7%)",
+  "Agent Architecture (4.5%)",
+  "Principles, patterns, and tradeoffs of agent architecture, including subagents.",
+  "Agent Construction with Claude (5.3%)",
+  "Methods, tools, and platforms for constructing Claude agents.",
+  "Agent Patterns and Frameworks (4.9%)",
+  "Common agent design patterns for tool use and retrieval.",
+  "Domain 2: Eval, Testing, and Debugging (2.6%)",
+  "Debugging and Error Handling (2.6%)",
+  "Reading traces and instrumenting an agent for evaluation.",
+].join("\n");
+const blueprint = parseWeightedBlueprint(blueprintDoc);
+ok("reads the official 'Domain N: Name (W%)' blueprint", blueprint !== null);
+ok("blueprint keeps 2 domains", blueprint?.length === 2);
+ok(
+  "blueprint keeps only the 4 skill names, not the prose",
+  (blueprint ?? []).flatMap((d) => d.children ?? []).length === 4
+);
+ok("blueprint sums to 100", Math.abs(sumLeafWeight(normalizeWeights(blueprint ?? [])) - 100) < 0.001);
+// A document whose skills do not add up to their own domain weight is not a
+// weightage blueprint, so it must be handed to the model instead.
+ok(
+  "rejects a blueprint whose skills contradict its domains",
+  parseWeightedBlueprint("Domain 1: Agents (14.7%)\nArchitecture (40%)\nDomain 2: Tools (2.6%)\nMCP (2.6%)") === null
+);
+
+// Plain pasted outlines, in each shape people actually paste.
+const mdOutline = "# Agents — 60%\n- Architecture (40%)\n- Patterns (20%)\n# Tools — 40%\n- MCP (40%)";
+const md = parseSyllabusOutline(mdOutline);
+ok("markdown bullets nest under their heading", md?.[0]?.children?.length === 2);
+ok("markdown outline normalises to 100", Math.abs(sumLeafWeight(normalizeWeights(md ?? [])) - 100) < 0.001);
+
+const alphaOutline = "1. Agents (60%)\n   a. Architecture (40%)\n   b. Patterns (20%)\n2. Tools (40%)\n   a. MCP (40%)";
+ok("strips alphabetic list markers", parseSyllabusOutline(alphaOutline)?.[0]?.children?.[0]?.name === "Architecture");
+ok("leaves initials alone", parseSyllabusOutline("A. Reyes — Testing (40%)\nB. Okafor — Debugging (60%)")?.[0]?.name === "A. Reyes — Testing");
+
+// Weightage maths: largest-remainder must land on exactly 100 every time.
+ok("normalises 25 uneven leaves to exactly 100", (() => {
+  const nodes = Array.from({ length: 25 }, (_, i) => ({ name: `T${i}`, weight: i === 0 ? 33.1 : 2.4 }));
+  return sumLeafWeight(normalizeWeights(nodes)) === 100;
+})());
+ok("parent weight is the sum of its children", (() => {
+  // The parent is a heading, so normalising must rewrite it to whatever the
+  // children now total — not leave it at the value the document gave it.
+  const n = normalizeWeights([
+    { name: "A", weight: 50, children: [{ name: "A1", weight: 30 }, { name: "A2", weight: 20 }] },
+  ]);
+  const childSum = n[0].children!.reduce((s, c) => s + c.weight, 0);
+  return n[0].weight === childSum && childSum === 100;
+})());
+ok("all-zero weights are spread evenly, not left at 0", (() => {
+  const n = normalizeWeights([
+    { name: "A", weight: 0, children: [{ name: "A1", weight: 0 }, { name: "A2", weight: 0 }] },
+  ]);
+  return sumLeafWeight(n) === 100;
+})());
 
 console.log(`\n${failures === 0 ? "all checks passed" : `${failures} check(s) FAILED`}`);
 process.exit(failures === 0 ? 0 : 1);

@@ -730,7 +730,10 @@ export async function ragSearch(
     clauses.push(`m.knowledge_base_id = $${++paramIdx}`);
     params.push(opts.knowledgeBaseId);
   } else if (opts.examId) {
-    clauses.push(`(m.exam_id = $${++paramIdx} OR m.exam_id IS NULL)`);
+    clauses.push(
+      `(m.exam_id = $${++paramIdx} OR m.exam_id IS NULL
+        OR m.knowledge_base_id IN (SELECT knowledge_base_id FROM exam_knowledge_bases WHERE exam_id = $${paramIdx}))`
+    );
     params.push(opts.examId);
   }
   const where = clauses.join(" AND ");

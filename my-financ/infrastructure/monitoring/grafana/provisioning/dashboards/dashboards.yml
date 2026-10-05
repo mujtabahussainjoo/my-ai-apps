@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: my-financ
+    orgId: 1
+    folder: my-financ
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards

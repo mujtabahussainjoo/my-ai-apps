@@ -64,20 +64,31 @@ export default async function MaterialsPage({
 
       <div className="grid gap-6 lg:grid-cols-[380px_1fr]">
         <div className="space-y-4">
-          <CreateKnowledgeBaseForm />
-          <AddMaterial examId={exam ?? null} knowledgeBases={knowledgeBases} defaultKnowledgeBaseId={activeKb?.id ?? null} />
+          {isAdmin(user) ? (
+            <>
+              <CreateKnowledgeBaseForm />
+              <AddMaterial examId={exam ?? null} knowledgeBases={knowledgeBases} defaultKnowledgeBaseId={activeKb?.id ?? null} />
+            </>
+          ) : (
+            <Card className="border-dashed p-4 text-sm text-foreground/55">
+              Read-only. Only admins can create knowledge bases or upload training material — you can read everything
+              below and generate practice from it.
+            </Card>
+          )}
         </div>
 
         <div>
           <div className="mb-4">
-            <GenerateQuestionsPanel
-              exams={exams}
-              examId={exam ?? ""}
-              knowledgeBases={knowledgeBases.length > 0 ? knowledgeBases : undefined}
-              defaultKnowledgeBaseId={activeKb?.id ?? null}
-              topicsByExam={topicsByExam}
-              materials={materials}
-            />
+            {isAdmin(user) ? (
+              <GenerateQuestionsPanel
+                exams={exams}
+                examId={exam ?? ""}
+                knowledgeBases={knowledgeBases.length > 0 ? knowledgeBases : undefined}
+                defaultKnowledgeBaseId={activeKb?.id ?? null}
+                topicsByExam={topicsByExam}
+                materials={materials}
+              />
+            ) : null}
           </div>
 
           {!kb && !exam && (
@@ -106,7 +117,7 @@ export default async function MaterialsPage({
                       {b.docCount} doc{b.docCount === 1 ? "" : "s"} · {b.chunkCount} chunks
                     </p>
                   </Link>
-                  <DeleteKnowledgeBaseButton id={b.id} name={b.name} />
+                  {isAdmin(user) && <DeleteKnowledgeBaseButton id={b.id} name={b.name} />}
                 </div>
               ))}
             </div>
@@ -125,7 +136,7 @@ export default async function MaterialsPage({
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                <DeleteKnowledgeBaseButton id={activeKb.id} name={activeKb.name} />
+                {isAdmin(user) && <DeleteKnowledgeBaseButton id={activeKb.id} name={activeKb.name} />}
                 <Link href="/materials" className="tag text-foreground/55 hover:text-foreground">
                   Show all
                 </Link>
@@ -145,9 +156,9 @@ export default async function MaterialsPage({
               description="Create a knowledge base, then paste notes, add weblinks or upload a whole folder of PDFs — then generate questions from them."
             />
           ) : kb && activeKb ? (
-            <MaterialsGrid materials={materialsByKb.get(activeKb.id) ?? []} showOwner={isAdmin(user)} />
+            <MaterialsGrid materials={materialsByKb.get(activeKb.id) ?? []} showOwner={isAdmin(user)} canEdit={isAdmin(user)} />
           ) : exam ? (
-            <MaterialsGrid materials={materials} showOwner={isAdmin(user)} />
+            <MaterialsGrid materials={materials} showOwner={isAdmin(user)} canEdit={isAdmin(user)} />
           ) : (
             <div className="space-y-8">
               {knowledgeBases.map((b) => {
@@ -165,7 +176,7 @@ export default async function MaterialsPage({
                         No docs in this knowledge base yet — upload them below.
                       </p>
                     ) : (
-                      <MaterialsGrid materials={list} showOwner={isAdmin(user)} />
+                      <MaterialsGrid materials={list} showOwner={isAdmin(user)} canEdit={isAdmin(user)} />
                     )}
                   </section>
                 );
@@ -178,7 +189,7 @@ export default async function MaterialsPage({
                       {ungrouped.length} source{ungrouped.length === 1 ? "" : "s"}
                     </span>
                   </div>
-                  <MaterialsGrid materials={ungrouped} showOwner={isAdmin(user)} />
+                  <MaterialsGrid materials={ungrouped} showOwner={isAdmin(user)} canEdit={isAdmin(user)} />
                 </section>
               )}
             </div>
@@ -189,7 +200,7 @@ export default async function MaterialsPage({
   );
 }
 
-function MaterialsGrid({ materials, showOwner = false }: { materials: MaterialRow[]; showOwner?: boolean }) {
+function MaterialsGrid({ materials, showOwner = false, canEdit = false }: { materials: MaterialRow[]; showOwner?: boolean; canEdit?: boolean }) {
   if (materials.length === 0) {
     return (
       <EmptyState
@@ -216,7 +227,7 @@ function MaterialsGrid({ materials, showOwner = false }: { materials: MaterialRo
                 </span>
               </div>
             </div>
-            <DeleteMaterialButton id={m.id} />
+            {canEdit && <DeleteMaterialButton id={m.id} />}
           </div>
           {showOwner && m.ownerEmail && (
                 <span className="tag w-fit gap-1 text-sky-300">

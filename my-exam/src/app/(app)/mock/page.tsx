@@ -14,7 +14,9 @@ export default async function MockPage() {
   if (!user) redirect("/login");
   const [exams, sessions] = await Promise.all([listExams(), listSessions("mock", 10)]);
 
-  const weighted = exams.filter((e) => e.topicCount > 0);
+  // Weightage is what makes a mock weighted, not the number of topics — six
+  // topics all sitting at 0% would otherwise be offered as a weighted exam.
+  const weighted = exams.filter((e) => e.topicCount > 0 && e.totalWeightage > 0);
 
   return (
     <div className="space-y-6">

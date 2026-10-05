@@ -1,0 +1,16 @@
+README.md
+pyproject.toml
+mypa/__init__.py
+mypa/__main__.py
+mypa/cli.py
+mypa/config.py
+mypa/installer.py
+mypa/providers.py
+mypa/rules.py
+mypa/server.py
+mypa.egg-info/PKG-INFO
+mypa.egg-info/SOURCES.txt
+mypa.egg-info/dependency_links.txt
+mypa.egg-info/entry_points.txt
+mypa.egg-info/requires.txt
+mypa.egg-info/top_level.txt

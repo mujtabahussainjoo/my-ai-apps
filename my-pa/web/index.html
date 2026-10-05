@@ -1,8 +1,11 @@
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>myPA — Personal AI</title><link rel="stylesheet" href="styles.css"></head>
-<body><header><div class="logo">PA</div><div><b>myPA</b><div style="color:#9aa7c2;font-size:12px">your Personal AI · OpenCode-compatible</div></div>
+<body><header><div class="logo">PA</div><div><b>myPA</b><div style="color:#9aa7c2;font-size:12px">local coding & research agent</div></div>
 <nav><a href="index.html">Chat</a><a href="settings.html">Settings</a></nav></header>
-<main><div class="card"><div id="log"></div>
-<div class="row"><input id="in" placeholder="Ask myPA…"><button id="send">Send</button></div></div>
-<div class="card" style="color:#9aa7c2">Default model is the OpenCode free model. Add OpenAI / Anthropic / local keys in Settings to go live.</div></main>
-<script src="app.js"></script></body></html>
+<main>
+<section class="card conversation" aria-label="Conversation"><h2>Model replies &amp; conversation</h2><div id="log" role="log" aria-live="polite"></div></section>
+<section class="card composer"><label for="in" class="query-label">Your query</label><textarea id="in" rows="3" placeholder="Type your question or task here…"></textarea>
+<div class="row"><select id="mode" aria-label="Response mode"><option value="agent">Agent · files, commands &amp; web</option><option value="chat">Quick chat</option></select><button id="send">Send query</button><button id="clear" class="ghost">New chat</button></div>
+<p class="hint">Enter to send · Shift+Enter for a new line. Choose Agent for actions and research.</p><div id="status" role="status" aria-live="polite"></div></section>
+</main>
+<script src="api.js"></script><script src="app.js"></script></body></html>

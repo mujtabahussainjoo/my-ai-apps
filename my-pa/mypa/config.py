@@ -1,67 +1,134 @@
-"""Config load/merge for myPA. Stdlib only."""
+"""Validated JSONC configuration with recursive overlays and atomic writes."""
 from __future__ import annotations
+import copy
 import json
 import os
 import re
+import tempfile
 from pathlib import Path
 
-APP = "mypa"
-DEFAULT_MODEL = "opencode/muse-spark-1.3-contributor-free"
-
+APP = 'mypa'
+DEFAULT_MODEL = 'local/qwen2.5-coder:7b'
 DEFAULTS = {
-    "$schema": "https://opencode.ai/config.json",
-    "app": "myPA",
-    "theme": "mypa-dark",
-    "default_model": DEFAULT_MODEL,
-    "models_enabled": [DEFAULT_MODEL],
-    # No rules by default. Empty = no allow, no deny, no prohibition.
-    # User adds their own via `mypa rules` CLI or Web Settings.
-    "permissions": [],
-    "providers": {
-        "opencode": {"enabled": True, "note": "default, free tier"},
-        "openai": {"enabled": False, "api_key": "{env:OPENAI_API_KEY}", "model": "gpt-4o-mini"},
-        "anthropic": {"enabled": False, "api_key": "{env:ANTHROPIC_API_KEY}", "model": "claude-sonnet-4-5"},
-        "local": {"enabled": False, "base_url": "http://127.0.0.1:11434", "model": "llama3.1:8b"},
+    'app': 'myPA', 'theme': 'mypa-dark', 'default_model': DEFAULT_MODEL,
+    'models_enabled': [DEFAULT_MODEL], 'permissions': [],
+    'agent': {'workspace': '.', 'shell_enabled': True, 'max_steps': 16},
+    'providers': {
+        'opencode': {'enabled': False},
+        'openai': {'enabled': False, 'api_key': '{env:OPENAI_API_KEY}', 'model': 'gpt-4o-mini'},
+        'anthropic': {'enabled': False, 'api_key': '{env:ANTHROPIC_API_KEY}', 'model': 'claude-sonnet-4-5'},
+        'local': {'enabled': True, 'base_url': 'http://127.0.0.1:11434', 'model': 'qwen2.5-coder:7b'},
     },
 }
 
 
 def _strip_jsonc(text: str) -> str:
-    # Strip /* */ blocks, then full-line // comments only.
-    # (Inline // stripping would corrupt "https://..." strings.)
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
-    lines = [ln for ln in text.splitlines() if not ln.lstrip().startswith("//")]
-    return "\n".join(lines)
+    # Match strings first so comment markers inside strings survive.
+    token = r'"(?:\\.|[^"\\])*"|//[^\n]*|/\*[\s\S]*?\*/'
+    text = re.sub(token, lambda m: m[0] if m[0].startswith('"') else ' ', text)
+    token = r'"(?:\\.|[^"\\])*"|,\s*(?=[}\]])'
+    return re.sub(token, lambda m: m[0] if m[0].startswith('"') else '', text)
 
 
-def _load_file(p: Path) -> dict:
-    if not p.exists():
-        return {}
-    try:
-        return json.loads(_strip_jsonc(p.read_text(encoding="utf-8")))
-    except Exception:
-        return {}
+def merge(base: dict, overlay: dict) -> dict:
+    result = copy.deepcopy(base)
+    for key, value in overlay.items():
+        result[key] = merge(result[key], value) if isinstance(value, dict) and isinstance(result.get(key), dict) else copy.deepcopy(value)
+    return result
 
 
-def paths() -> tuple[Path, Path]:
-    home = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
-    return (home / APP / "mypa.jsonc", Path.cwd() / "mypa.jsonc")
-
-
-def load() -> dict:
-    cfg: dict = json.loads(json.dumps(DEFAULTS))
-    for p in paths():
-        overlay = _load_file(p)
-        for k, v in overlay.items():
-            if isinstance(v, dict) and isinstance(cfg.get(k), dict):
-                cfg[k] = {**cfg[k], **v}
-            else:
-                cfg[k] = v
+def validate(cfg: dict) -> dict:
+    if not isinstance(cfg, dict):
+        raise ValueError('Configuration must be an object')
+    model = cfg.get('default_model', '')
+    if not isinstance(model, str) or '/' not in model or not all(model.split('/', 1)):
+        raise ValueError('default_model must be provider/model')
+    providers = cfg.get('providers')
+    if not isinstance(providers, dict):
+        raise ValueError('providers must be an object')
+    if model.split('/', 1)[0] not in providers:
+        raise ValueError('Unknown default provider')
+    for name, provider in providers.items():
+        if not isinstance(provider, dict) or not isinstance(provider.get('enabled', False), bool):
+            raise ValueError(f'Invalid provider: {name}')
+        for key in ('api_key', 'model', 'base_url'):
+            if key in provider and not isinstance(provider[key], str):
+                raise ValueError(f'{name}.{key} must be text')
+        if 'base_url' in provider:
+            from urllib.parse import urlparse
+            url = urlparse(provider['base_url'])
+            if url.scheme not in ('http', 'https') or not url.hostname or url.username or url.password:
+                raise ValueError('base_url must be an HTTP(S) URL without credentials')
+    if cfg.get('theme') not in ('mypa-dark', 'mypa-light'):
+        raise ValueError('Unknown theme')
+    agent = cfg.get('agent', {})
+    if not isinstance(agent, dict) or not isinstance(agent.get('workspace', '.'), str) or not isinstance(agent.get('shell_enabled', True), bool):
+        raise ValueError('Invalid agent workspace or shell setting')
+    steps = agent.get('max_steps', 16)
+    if isinstance(steps, bool) or not isinstance(steps, int) or not 1 <= steps <= 32:
+        raise ValueError('agent.max_steps must be 1–32')
+    rules = cfg.get('permissions', [])
+    if not isinstance(rules, list):
+        raise ValueError('permissions must be a list')
+    for rule in rules:
+        if not isinstance(rule, dict) or rule.get('effect') not in ('allow', 'deny', 'ask') or any(not isinstance(rule.get(k), str) or not rule[k].strip() for k in ('action', 'resource')):
+            raise ValueError('Rules require action, resource, and allow/deny/ask effect')
     return cfg
 
 
+def _load_file(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        value = json.loads(_strip_jsonc(path.read_text(encoding='utf-8')))
+        if not isinstance(value, dict):
+            raise ValueError('Expected object')
+        return value
+    except (ValueError, OSError) as exc:
+        raise ValueError(f'Invalid configuration in {path}: {exc}') from exc
+
+
+def paths() -> tuple[Path, Path]:
+    home = Path(os.environ.get('XDG_CONFIG_HOME') or (Path.home() / '.config'))
+    return home / APP / 'mypa.jsonc', Path.cwd() / 'mypa.jsonc'
+
+
+def load() -> dict:
+    cfg = copy.deepcopy(DEFAULTS)
+    for path in paths():
+        cfg = merge(cfg, _load_file(path))
+    return validate(cfg)
+
+
 def save_global(cfg: dict) -> Path:
-    g, _ = paths()
-    g.parent.mkdir(parents=True, exist_ok=True)
-    g.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-    return g
+    validate(cfg)
+    path, _ = paths()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix='.mypa-')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            json.dump(cfg, stream, indent=2)
+            stream.write('\n')
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return path
+
+
+def update_global(overlay: dict) -> Path:
+    # Project overrides must never be copied into global settings.
+    global_path, local_path = paths()
+    cfg = merge(merge(DEFAULTS, _load_file(global_path)), overlay)
+    validate(merge(cfg, _load_file(local_path)))
+    return save_global(cfg)
+
+
+def public_config(cfg: dict) -> dict:
+    result = copy.deepcopy(cfg)
+    for provider in result['providers'].values():
+        key = provider.get('api_key', '')
+        if key and not re.fullmatch(r'\{env:[A-Za-z_][A-Za-z0-9_]*\}', key):
+            provider['api_key'] = ''
+            provider['key_configured'] = True
+    return result

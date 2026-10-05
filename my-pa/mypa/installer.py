@@ -3,7 +3,7 @@ from __future__ import annotations
 import shutil
 import urllib.request
 
-BEST_LOCAL_MODELS = ["llama3.1:8b", "mistral:7b", "codellama:7b", "phi3:mini"]
+BEST_LOCAL_MODELS = ["qwen2.5-coder:7b", "mistral:7b", "codellama:7b", "phi3:mini"]
 
 
 def ask(q: str, default_no=True) -> bool:
@@ -26,17 +26,18 @@ def check_node() -> None:
 
 
 def check_ollama() -> None:
-    if shutil.which("ollama"):
-        print("Ollama found.")
+    executable = shutil.which("ollama")
+    if not executable:
+        print("Ollama not found. Install it manually from https://ollama.com, then rerun this wizard.")
         return
-    print("Ollama NOT found. Local models need it: https://ollama.ai")
-    if ask("Open Ollama download page info (no install)?"):
-        print("-> https://ollama.ai  (install manually, then: ollama pull llama3.1:8b)")
-    if ask("Pull a local model now with 'ollama pull'? (requires ollama installed)"):
+    print("Ollama found.")
+    if ask("Download a local model with ollama pull?"):
         import subprocess
-        print("Best local models:", ", ".join(BEST_LOCAL_MODELS))
-        m = input("Which model? [llama3.1:8b]: ").strip() or "llama3.1:8b"
-        subprocess.run(["ollama", "pull", m])
+        print("Suggested models:", ", ".join(BEST_LOCAL_MODELS))
+        model = input("Model [qwen2.5-coder:7b]: ").strip() or "qwen2.5-coder:7b"
+        result = subprocess.run([executable, "pull", model])
+        if result.returncode:
+            print("Model download failed; check Ollama and retry.")
 
 
 def check_opencode() -> None:

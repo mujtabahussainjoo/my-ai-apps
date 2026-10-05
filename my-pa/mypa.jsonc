@@ -1,0 +1,27 @@
+{
+  "default_model": "local/qwen2.5-coder:7b",
+  "providers": {
+    "local": {
+      "enabled": true,
+      "base_url": "http://127.0.0.1:11434",
+      "model": "qwen2.5-coder:7b"
+    },
+    "opencode": {
+      "enabled": false
+    },
+    "openai": {
+      "enabled": false
+    },
+    "anthropic": {
+      "enabled": false
+    }
+  },
+  "agent": {
+    "workspace": ".",
+    "shell_enabled": true,
+    "max_steps": 16
+  },
+  "models_enabled": [
+    "local/qwen2.5-coder:7b"
+  ]
+}

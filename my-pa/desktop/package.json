@@ -1,7 +1,10 @@
 {
-  "name": "mypa-desktop",
-  "version": "0.1.0",
-  "description": "myPA desktop wrapper (Electron, optional — needs Node)",
-  "main": "main.js",
-  "scripts": { "start": "electron .", "dist": "electron-builder --win --linux --mac" }
+  "name": "mypa-desktop", "version": "0.1.0", "description": "myPA desktop app", "main": "main.js",
+  "scripts": {"start": "electron .", "dist": "electron-builder"},
+  "devDependencies": {"electron": "^38.0.0", "electron-builder": "^26.0.12"},
+  "build": {
+    "appId": "app.mypa.desktop", "productName": "myPA", "files": ["main.js", "package.json"],
+    "extraResources": [{"from": "../mypa", "to": "backend/mypa", "filter": ["**/*", "!**/__pycache__/**"]}, {"from": "../web", "to": "backend/web"}],
+    "linux": {"target": ["AppImage", "deb"]}, "win": {"target": "nsis"}, "mac": {"target": "dmg"}
+  }
 }

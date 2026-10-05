@@ -16,3 +16,9 @@ mypa = "mypa.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["mypa*"]
+
+[tool.setuptools.package-data]
+mypa = ["web/*.html", "web/*.js", "web/*.css"]
+
+[tool.setuptools.cmdclass]
+build_py = "build_support.BuildWithWeb"

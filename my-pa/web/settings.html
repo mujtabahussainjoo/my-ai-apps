@@ -1,41 +1,15 @@
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>myPA Settings</title><link rel="stylesheet" href="styles.css"></head>
-<body><header><div class="logo">PA</div><div><b>myPA Settings</b></div><nav><a href="index.html">Chat</a><a href="settings.html">Settings</a></nav></header>
-<main><div class="card">
-<label>Default model</label><select id="default_model">
-<option>opencode/muse-spark-1.3-contributor-free</option><option>openai/gpt-4o-mini</option><option>anthropic/claude-sonnet-4-5</option><option>local/llama3.1:8b</option>
-</select>
-<label><input type="checkbox" id="en_openai"> Enable OpenAI</label>
-<input type="password" id="openai_key" placeholder="OPENAI_API_KEY (or set env, leave blank to use env)">
-<label><input type="checkbox" id="en_anthropic"> Enable Anthropic</label>
-<input type="password" id="anth_key" placeholder="ANTHROPIC_API_KEY">
-<label><input type="checkbox" id="en_local"> Enable local (Ollama)</label>
-<input type="text" id="local_model" placeholder="llama3.1:8b">
-<div class="row"><button id="save">Save</button><button class="ghost" id="reload">Reload</button></div>
-<div id="status" style="color:#9aa7c2;margin-top:8px"></div></div>
-<div class="card"><b>Rules</b> — allow / deny / ask. Empty = no prohibitions. Add your own:
-<div id="rules" style="margin:8px 0"></div>
-<div class="row"><input id="r_action" placeholder="action e.g. shell, read, edit, *"><input id="r_resource" placeholder="resource e.g. rm *, *.env, *">
-<select id="r_effect"><option>allow</option><option>deny</option><option>ask</option></select><button id="r_add">Add</button></div>
-<div class="row"><button class="ghost" id="r_clear">Clear all rules</button></div></div></main>
-<script>
-async function load(){const c=await(await fetch('/api/config')).json();
-document.getElementById('default_model').value=c.default_model||'opencode/muse-spark-1.3-contributor-free';
-document.getElementById('en_openai').checked=!!c.providers?.openai?.enabled;
-document.getElementById('en_anthropic').checked=!!c.providers?.anthropic?.enabled;
-document.getElementById('en_local').checked=!!c.providers?.local?.enabled;
-document.getElementById('local_model').value=c.providers?.local?.model||'llama3.1:8b';}
-async function save(){const body={default_model:document.getElementById('default_model').value,
-providers:{openai:{enabled:document.getElementById('en_openai').checked},
-anthropic:{enabled:document.getElementById('en_anthropic').checked},
-local:{enabled:document.getElementById('en_local').checked,model:document.getElementById('local_model').value||'llama3.1:8b'}}};
-const ok=await(await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
-document.getElementById('status').textContent='Saved '+ok.saved;}
-document.getElementById('save').onclick=save;document.getElementById('reload').onclick=load;load();
-async function rlist(){const r=await(await fetch('/api/rules')).json();const d=document.getElementById('rules');d.innerHTML='';
-(r.permissions||[]).forEach((x,i)=>{const row=document.createElement('div');row.textContent=`${i}: ${x.action} | ${x.resource} | ${x.effect} `;
-const b=document.createElement('button');b.textContent='Remove';b.className='ghost';b.onclick=async()=>{await fetch('/api/rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({op:'remove',index:i})});rlist();};row.appendChild(b);d.appendChild(row);});
-if(!(r.permissions||[]).length)d.textContent='No rules — nothing denied or allowed explicitly.';}
-document.getElementById('r_add').onclick=async()=>{await fetch('/api/rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({op:'add',action:document.getElementById('r_action').value||'*',resource:document.getElementById('r_resource').value||'*',effect:document.getElementById('r_effect').value})});rlist();};
-document.getElementById('r_clear').onclick=async()=>{await fetch('/api/rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({op:'clear'})});rlist();};rlist();
-</script></body></html>
+<body><header><div class="logo">PA</div><b>myPA Settings</b><nav><a href="index.html">Chat</a><a href="settings.html" aria-current="page">Settings</a></nav></header>
+<main><form id="settings" class="card">
+<label for="default_model">Default model (provider/model)</label><input id="default_model" required placeholder="local/qwen2.5-coder:7b">
+<label for="theme">Appearance</label><select id="theme"><option value="mypa-dark">Dark</option><option value="mypa-light">Light</option></select>
+<label for="workspace">Agent workspace</label><input id="workspace" required><label><input id="shell_enabled" type="checkbox"> Enable command execution (runs with your user permissions)</label><label for="max_steps">Maximum tool rounds (1–32)</label><input id="max_steps" type="number" min="1" max="32"><div id="local-models"></div><div id="providers"></div>
+<p>Blank keys preserve saved credentials. Use {env:VARIABLE_NAME} to read a key from the server environment. Entering a key saves it in your private local configuration file.</p>
+<div class="row"><button id="save">Save</button><button type="button" class="ghost" id="reload">Reload</button></div>
+<div id="status" role="status" aria-live="polite"></div></form>
+<div class="card"><b>Agent tool rules</b><p>Local agent tools are enabled by default. File tools stay within the workspace; commands run with the server user’s filesystem and network access. Use read, write, shell, web or a tool name to restrict actions. Deny and ask both block execution. Later matching rules take precedence.</p>
+<div id="rules"></div><form id="rule-form" class="row"><input id="r_action" aria-label="Action" placeholder="Action" required><input id="r_resource" aria-label="Resource" placeholder="Resource pattern" required><select id="r_effect" aria-label="Effect"><option>allow</option><option>deny</option><option>ask</option></select><button>Add</button></form>
+<button class="ghost" id="r_clear" type="button">Clear rules</button></div></main>
+<script src="api.js"></script><script src="settings.js"></script></body></html>

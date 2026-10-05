@@ -1,0 +1,21 @@
+import os
+import sys
+
+# Define the interface
+interface = "
+My-PA CLI Interface
+=====================
+
+Commands:
+  - list_files: List files in the workspace directory
+  - read_file: Read a file in the workspace
+  - write_file: Create or replace a file in the workspace
+  - edit_file: Replace text in a file
+  - search_files: Search for text in workspace source files
+  - run_command: Run a command in the workspace
+  - web_search: Search the public web
+  - encyclopedia_search: Search Wikipedia
+  - fetch_url: Read text from an HTTP(S) web page
+
+Usage: my-pa <command> [args]
+"

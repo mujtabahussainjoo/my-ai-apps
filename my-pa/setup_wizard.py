@@ -14,7 +14,7 @@ else:
     print("Skipped.")
 print()
 print("--- Optional: local models (Ollama) ---")
-print("Best local models: llama3.1:8b, mistral:7b, codellama:7b, phi3:mini")
+print("Best local models: qwen2.5-coder:7b, mistral:7b, codellama:7b, phi3:mini")
 check_ollama()
 print()
 print("--- Optional: upstream opencode CLI ---")
@@ -22,11 +22,14 @@ check_opencode()
 print()
 print("--- Default provider ---")
 cfg = load()
-print("default_model =", cfg["default_model"], "(opencode free, enabled)")
-if ask("Keep opencode free model as default?", default_no=False):
+print("default_model =", cfg["default_model"])
+if ask("Keep the current default model?", default_no=False):
     pass
 else:
     cfg["default_model"] = input("Enter default (e.g. openai/gpt-4o-mini): ").strip()
+    provider = cfg["default_model"].split("/", 1)[0]
+    if provider in cfg["providers"]:
+        cfg["providers"][provider]["enabled"] = True
     save_global(cfg)
 print()
 print("Set keys via Web UI /settings.html or env vars:")

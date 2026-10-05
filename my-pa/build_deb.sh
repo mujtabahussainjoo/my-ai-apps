@@ -12,7 +12,7 @@ command -v dpkg-deb >/dev/null || { echo "dpkg-deb not found. Run: sudo apt inst
 rm -rf "$PKG"
 mkdir -p "$PKG/opt/mypa" "$PKG/usr/bin" "$PKG/usr/share/applications" "$PKG/DEBIAN"
 cp -r mypa web mypa.example.jsonc README.md pyproject.toml setup_wizard.py "$PKG/opt/mypa/"
-printf '#!/bin/sh\nexec python3 -m mypa "$@"\n' > "$PKG/usr/bin/mypa"
+printf '#!/bin/sh\ncd /opt/mypa\nexec python3 -m mypa "$@"\n' > "$PKG/usr/bin/mypa"
 printf 'import sys; sys.path.insert(0, "/opt/mypa")\n' > "$PKG/opt/mypa/mypa.pth.hint"
 sed "s|INSTALL_DIR|/opt/mypa|" mypa.desktop > "$PKG/usr/share/applications/mypa.desktop"
 cat > "$PKG/DEBIAN/control" <<EOF
@@ -21,7 +21,7 @@ Version: $VERSION
 Architecture: all
 Maintainer: myPA
 Description: myPA - Personal AI agent (OpenCode-compatible)
- Depends: python3 (>= 3.10), python3-requests
+Depends: python3 (>= 3.10), python3-requests
 EOF
 dpkg-deb --build "$PKG"
 echo "Built $PKG.deb — install with:  sudo dpkg -i $PKG.deb"

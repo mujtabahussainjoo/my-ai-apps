@@ -5,7 +5,7 @@
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc && node scripts/copy-assets.js",
-    "start": "electron dist/main.js",
+    "start": "electron dist/main.js --disable-gpu --disable-software-rasterizer --no-sandbox",
     "start:hidden": "wscript scripts\\start-hidden.vbs",
     "dev": "npm run build && npm start"
   },

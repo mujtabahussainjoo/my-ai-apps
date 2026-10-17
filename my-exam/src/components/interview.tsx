@@ -24,18 +24,23 @@ export function InterviewSetup({
   const start = async () => {
     setBusy(true);
     setErr(null);
-    const res = await startInterview({
-      examId: examId || null,
-      role,
-      difficulty,
-      count,
-    });
-    setBusy(false);
-    if (!res.ok) {
-      setErr(res.error);
-      return;
+    try {
+      const res = await startInterview({
+        examId: examId || null,
+        role,
+        difficulty,
+        count,
+      });
+      if (!res.ok) {
+        setErr(res.error);
+        return;
+      }
+      router.push(`/interview/${res.id}`);
+    } catch {
+      setErr("The server took too long to answer. Try again, or ask for fewer questions.");
+    } finally {
+      setBusy(false);
     }
-    router.push(`/interview/${res.id}`);
   };
 
   return (

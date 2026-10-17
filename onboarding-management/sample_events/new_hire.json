@@ -1,0 +1,25 @@
+{
+  "event_id": "event-101",
+  "source": "ashby",
+  "employee_id": "EMP-100",
+  "event_type": "new_hire",
+  "changed_fields": [
+    "employee_id",
+    "legal_name",
+    "start_date",
+    "work_location",
+    "shipping_address",
+    "department",
+    "job_title"
+  ],
+  "approved": true,
+  "received_at": "2026-10-01T09:00:00Z",
+  "employee": {
+    "name": "Priya Nair",
+    "start_date": "2026-11-02",
+    "location": "Bangalore",
+    "address": "Sample shipping address, Bangalore",
+    "department": "Engineering",
+    "job_title": "Product Designer"
+  }
+}

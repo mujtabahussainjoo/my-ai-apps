@@ -25,7 +25,7 @@ import {
   extractTextFromUrl,
 } from "@/lib/ingest";
 import { classifyUpload, titleFromPath } from "@/lib/material-path";
-import { AIError, chatCompletion, chatJson, isAiAvailable, ragSearch, testAiConfig, type AIChatMessage, type AIConfig, type AIProvider } from "@/lib/ai";
+import { AIError, SERVER_ACTION_BUDGET_MS, actionDeadline, chatCompletion, chatJson, isAiAvailable, ragSearch, remainingActionMs, testAiConfig, type AIChatMessage, type AIConfig, type AIProvider } from "@/lib/ai";
 import { generateFromAI, MAX_GEN, persistGeneratedQuestions } from "@/lib/generate";
 import { interviewFeedbackPrompt, assistantSystemPrompt, syllabusExtractPrompt } from "@/lib/prompts";
 import {
@@ -954,6 +954,7 @@ export async function generateQuestions(input: {
   if (!["mcq", "true_false", "short"].includes(input.type)) {
     return { ok: false, error: "Pick mcq, true/false or short answer" };
   }
+  const deadline = actionDeadline();
   try {
     let kbId = input.knowledgeBaseId || null;
     let contextUserId = user.id;
@@ -978,6 +979,7 @@ export async function generateQuestions(input: {
       forceTopicId: input.topicIds.length === 1 ? input.topicIds[0] : null,
       type: input.type as "mcq" | "true_false" | "short",
       count,
+      budgetMs: remainingActionMs(deadline),
       onBatch: async (batch) => {
         created += await persistGeneratedQuestions(user.id, input.examId, batch);
       },
@@ -1023,6 +1025,7 @@ export async function generateFlashcards(input: {
   if (!user) return guard();
   if (!isAdmin(user)) return { ok: false, error: "Admin access required for this action" };
   const count = Math.min(MAX_GEN, Math.max(1, Math.round(input.count || 10)));
+  const deadline = actionDeadline();
   try {
     let kbId = input.knowledgeBaseId || null;
     let contextUserId = user.id;
@@ -1044,6 +1047,7 @@ export async function generateFlashcards(input: {
       forceTopicId: input.topicIds.length === 1 ? input.topicIds[0] : null,
       type: "flashcard",
       count,
+      budgetMs: remainingActionMs(deadline),
       onBatch: async (batch) => {
         for (const r of batch) {
           await query(
@@ -1366,6 +1370,7 @@ export async function selfGradeAnswer(sessionId: string, questionId: string, cor
 export async function createMock(input: { examId: string; count: number }): Promise<ActionResult> {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
+  const deadline = actionDeadline();
   const count = Math.min(50, Math.max(5, Math.round(input.count || 20)));
   const exam = isAdmin(user)
     ? await queryOne<{ id: string; title: string }>("SELECT id, title FROM exams WHERE id = $1", [input.examId])
@@ -1428,6 +1433,7 @@ export async function createMock(input: { examId: string; count: number }): Prom
       topicIds: topicFor ? [topicFor.id] : [],
       type: "mcq",
       count: remaining,
+      budgetMs: remainingActionMs(deadline),
     }).catch(() => []);
     aiAdded = missing.length;
     for (let i = 0; i < missing.length; i++) {
@@ -1485,6 +1491,7 @@ export async function startInterview(input: {
   const user = await requireUser().catch(() => null);
   if (!user) return guard();
   const count = Math.min(10, Math.max(1, Math.round(input.count || 5)));
+  const deadline = actionDeadline();
   if (input.examId && !isAdmin(user)) {
     const owned = await queryOne(
       `SELECT id FROM exams WHERE id = $1 AND
@@ -1503,6 +1510,7 @@ export async function startInterview(input: {
       examId: input.examId,
       type: "interview",
       count,
+      budgetMs: remainingActionMs(deadline),
     });
     if (rows.length === 0) return { ok: false, error: "Could not generate questions" };
     const snapshot: QuizQuestion[] = rows.map((r, i) => ({
@@ -1540,6 +1548,7 @@ export async function submitInterview(sessionId: string, answers: SubmittedAnswe
   if (!session) return { ok: false, error: "Interview session not found" };
   const questions = (Array.isArray(session.questions) ? session.questions : JSON.parse(String(session.questions))) as QuizQuestion[];
 
+  const deadline = actionDeadline();
   const entries: AnswerEntry[] = [];
   for (const q of questions) {
     const a = answers.find((x) => x.questionId === q.id);
@@ -1553,7 +1562,10 @@ export async function submitInterview(sessionId: string, answers: SubmittedAnswe
           modelAnswer: q.answer ?? undefined,
           userAnswer: text.slice(0, 4000),
         });
-        feedback = await chatJson<InterviewFeedback>(user.id, system, userPrompt, { maxTokens: 1200 });
+        feedback = await chatJson<InterviewFeedback>(user.id, system, userPrompt, {
+          maxTokens: 1200,
+          timeoutMs: remainingActionMs(deadline),
+        });
       } catch {
         feedback = null;
       }
@@ -1788,7 +1800,11 @@ export async function sendChatMessage(prev: unknown, formData: FormData): Promis
       ...history.map((h) => ({ role: h.role as "user" | "assistant", content: h.content })),
       { role: "user", content: message },
     ];
-    const reply = await chatCompletion(user.id, messages, { maxTokens: 1500, temperature: 0.4 });
+    const reply = await chatCompletion(user.id, messages, {
+      maxTokens: 1500,
+      temperature: 0.4,
+      timeoutMs: SERVER_ACTION_BUDGET_MS,
+    });
 
     const sources: ChatSource[] = retrieved.map((r) => ({
       title: r.title,

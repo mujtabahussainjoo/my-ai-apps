@@ -1,0 +1,26 @@
+{
+  "EMP-101": {
+    "employee_id": "EMP-101",
+    "legal_name": "Rahul Sharma",
+    "preferred_name": "Rahul",
+    "start_date": "2026-11-02",
+    "work_location": "Bangalore",
+    "shipping_address": "Sample shipping address, Bangalore",
+    "department": "Engineering",
+    "job_title": "Software Engineer",
+    "personal_email": "rahul.sharma@example.com",
+    "manager": "Priya Nair"
+  },
+  "EMP-102": {
+    "employee_id": "EMP-102",
+    "legal_name": "Ananya Rao",
+    "preferred_name": "Ananya",
+    "start_date": "2026-11-16",
+    "work_location": "Hyderabad",
+    "shipping_address": "Sample shipping address, Hyderabad",
+    "department": "Marketing",
+    "job_title": "Content Strategist",
+    "personal_email": "ananya.rao@example.com",
+    "manager": "Rahul Sharma"
+  }
+}

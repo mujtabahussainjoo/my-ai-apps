@@ -1,0 +1,47 @@
+# Application, database, auth, limits, observability, and integration configuration.
+# Values here are DEFAULTS. Environment variables override using the nested
+# delimiter `__`, e.g. APP__ENV, DATABASE__URL, INTEGRATIONS__JIRA_BASE_URL.
+# Secrets should be supplied via environment/.env, never committed here.
+
+app:
+  env: development            # development | test | staging | production
+  debug: false
+  log_level: info             # debug | info | warning | error
+  log_format: structured      # structured (JSON) | plain (console)
+  service_host: 0.0.0.0
+  service_port: 8000
+
+database:
+  url: postgresql+asyncpg://ecombot:ecombot@localhost:5434/ecombot
+  echo: false
+  pool_size: 10
+  max_overflow: 20
+
+auth:
+  jwt_secret: change-me-in-production
+  jwt_algorithm: HS256
+  jwt_expires_minutes: 60
+
+limits:
+  rate_limit_per_minute: 60
+  max_message_chars: 4000
+  max_document_bytes: 10485760   # 10 MB
+
+observability:
+  tracing_enabled: false
+  langsmith_tracing: false
+  langsmith_project: ecommerce-support
+  langsmith_api_key: null
+
+integrations:
+  commerce_provider: mock        # mock (only option in v1)
+  ticketing_provider: mock       # mock | jira | servicenow | both | none
+  jira_base_url: null
+  jira_email: null
+  jira_api_token: null
+  jira_project_key: null
+  jira_issue_type: Ticket
+  servicenow_instance: null
+  servicenow_username: null
+  servicenow_password: null
+  servicenow_table: incident

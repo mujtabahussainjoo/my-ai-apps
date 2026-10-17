@@ -2,6 +2,31 @@ import { query, queryOne } from "@/lib/db";
 
 export class AIError extends Error {}
 
+/**
+ * Wall-clock ceiling for a single AI-backed server action.
+ *
+ * The dev server is reached through a Cloudflare quick tunnel, and production
+ * sits behind similar edge proxies. Cloudflare closes a proxied request its
+ * origin has not answered within 100 seconds, so the browser's server-action
+ * fetch receives a non-RSC body and Next reports the opaque "An unexpected
+ * response was received from the server." A generation run that loops for tens
+ * of minutes is guaranteed to trip that. Keeping every run under this limit
+ * lets the action return the items gathered so far plus a shortfall note
+ * instead of dying on the wire. Override with SERVER_ACTION_BUDGET_MS for
+ * local, un-proxied runs.
+ */
+export const SERVER_ACTION_BUDGET_MS = Number(process.env.SERVER_ACTION_BUDGET_MS ?? 80_000);
+
+/** Start of a long action; pass to `remainingActionMs` to bound follow-up work. */
+export function actionDeadline(): number {
+  return Date.now() + SERVER_ACTION_BUDGET_MS;
+}
+
+/** Budget left before `deadline`, floored so a call can still make one attempt. */
+export function remainingActionMs(deadline: number): number {
+  return Math.max(5_000, deadline - Date.now());
+}
+
 /** Told when a response was cut off by the output cap, so callers can record it. */
 type TruncationNotice = (info: { maxTokens: number; finishReason: string }) => void;
 
@@ -132,7 +157,7 @@ export async function testAiConfig(cfg: AIConfig): Promise<{ ok: boolean; detail
           stream: false,
           max_tokens: 8,
         }),
-        signal: AbortSignal.timeout(90_000),
+        signal: AbortSignal.timeout(SERVER_ACTION_BUDGET_MS),
       }
     );
     if (!res.ok) return { ok: false, detail: `${prefix} Generation failed (HTTP ${res.status})` };
@@ -308,7 +333,7 @@ async function chatCompletionWithConfig(
 export async function chatCompletion(
   userId: string | null,
   messages: AIChatMessage[],
-  opts: { temperature?: number; maxTokens?: number } = {}
+  opts: { temperature?: number; maxTokens?: number; timeoutMs?: number } = {}
 ): Promise<string> {
   const cfg = await resolveConfig(userId);
   return chatCompletionWithConfig(cfg, messages, opts);
@@ -505,7 +530,7 @@ export async function chatJson<T = unknown>(
   userId: string | null,
   system: string,
   user: string,
-  opts: { temperature?: number; maxTokens?: number } = {}
+  opts: { temperature?: number; maxTokens?: number; timeoutMs?: number } = {}
 ): Promise<T> {
   const cfg = await resolveConfig(userId);
   const content = await chatCompletionWithConfig(

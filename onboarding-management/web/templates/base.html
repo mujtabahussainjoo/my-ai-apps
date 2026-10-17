@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}Onboarding Dashboard{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">BU</span>
+      <div>
+        <h1>Onboarding Integration</h1>
+        <p class="sub">Ashby &middot; Workday &middot; Okta &middot; Google Workspace &middot; Slack &middot; Equipment &middot; Cohort tracker</p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <span class="pill {{ 'ok' if ai_enabled else 'muted' }}" id="ai-pill"
+            title="AI copilot uses OpenAI when a key is configured, otherwise a deterministic fallback">
+        AI: {{ 'on' if ai_enabled else 'fallback' }}
+      </span>
+      <span class="pill {{ 'warn' if live else 'info' }}" id="mode-pill">
+        {{ 'live portal' if live else 'in-process portal' }}
+      </span>
+      <button class="ghost" id="refresh-btn" type="button">Refresh</button>
+      <button class="ghost" id="reset-btn" type="button"
+              title="Clear ledger, exceptions, audit log, tasks and the mock portal">Reset demo</button>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-tab="overview">Overview</button>
+    {% for sys in systems %}
+    <button class="tab" data-tab="sys-{{ sys.key }}" data-system="{{ sys.key }}">
+      {{ sys.display_name }}
+      {% if sys.kind in ('target', 'source') %}<span class="badge soft" id="badge-{{ sys.key }}">0</span>{% endif %}
+    </button>
+    {% endfor %}
+    <button class="tab" data-tab="exceptions">Exceptions <span class="badge" id="exceptions-badge">0</span></button>
+    <button class="tab" data-tab="audit">Audit trail</button>
+    <button class="tab" data-tab="tasks">Tasks &amp; deadlines</button>
+    <button class="tab" data-tab="ledger">Operation ledger</button>
+  </nav>
+
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+
+  <script>window.SYS_NAMES = {{ sys_names | tojson }};</script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+# RAG pipeline configuration. Defaults chosen for policy/FAQ prose (see docs/rag-pipeline.md).
+# Rationale: 1000-char chunks ≈ 150-200 words keep a full policy clause intact;
+# 150 overlap preserves sentence context across boundaries. top_k=5 balances recall
+# vs. prompt size; cosine-distance 0.35 abstains rather than guessing.
+
+rag:
+  top_k: 5
+  distance_metric: cosine        # cosine | l2 | ip
+  distance_threshold: 0.35       # max cosine distance; higher => weaker evidence
+  chunk_size: 1000               # characters
+  chunk_overlap: 150             # characters
+  rerank_enabled: false
+  rerank_top_n: 5

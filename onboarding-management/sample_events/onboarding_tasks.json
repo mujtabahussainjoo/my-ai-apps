@@ -1,0 +1,38 @@
+[
+  {
+    "task_id": "task-EMP-101-hardware",
+    "employee_id": "EMP-101",
+    "name": "IT hardware form",
+    "owner": "it-ops@betterup.example",
+    "due_in_days": 6,
+    "status": "PENDING",
+    "notes": "Order laptop and ship to work location"
+  },
+  {
+    "task_id": "task-EMP-101-background",
+    "employee_id": "EMP-101",
+    "name": "Background check",
+    "owner": "people-ops@betterup.example",
+    "due_in_days": 3,
+    "status": "IN_PROGRESS",
+    "notes": "Vendor check pending"
+  },
+  {
+    "task_id": "task-EMP-101-okta",
+    "employee_id": "EMP-101",
+    "name": "Okta provisioning",
+    "owner": "it-ops@betterup.example",
+    "due_in_days": -4,
+    "status": "NOT_STARTED",
+    "notes": "Access not yet scheduled"
+  },
+  {
+    "task_id": "task-EMP-100-hardware",
+    "employee_id": "EMP-100",
+    "name": "IT hardware form",
+    "owner": "it-ops@betterup.example",
+    "due_in_days": 5,
+    "status": "COMPLETE",
+    "notes": "Already shipped"
+  }
+]

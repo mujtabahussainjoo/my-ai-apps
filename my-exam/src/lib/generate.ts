@@ -1,4 +1,4 @@
-import { AIError, chatJsonArray, ragSearch } from "@/lib/ai";
+import { AIError, SERVER_ACTION_BUDGET_MS, chatJsonArray, ragSearch } from "@/lib/ai";
 import { matchTopic, type MatchableTopic } from "@/lib/topic-match";
 import { findDuplicateCandidates } from "@/lib/dedupe-semantic";
 import { recordEvent } from "@/lib/diagnostics";
@@ -628,8 +628,14 @@ export async function generateFromAI(input: GenInput): Promise<GenRow[]> {
   // Each model call has its own budget, so a large request is a loop of them.
   // Without an overall deadline a 50-question run could keep going for an hour;
   // every batch is persisted as it lands, so stopping early still keeps the work.
+  // The deadline is also capped below the edge-proxy timeout (see
+  // SERVER_ACTION_BUDGET_MS): a run that outlives that never reaches the browser,
+  // which is what surfaced as "An unexpected response was received from the server".
   const startedAt = Date.now();
-  const overallBudgetMs = input.budgetMs ?? Math.max(180_000, total * 75_000);
+  const overallBudgetMs = Math.min(
+    input.budgetMs ?? Math.max(180_000, total * 75_000),
+    SERVER_ACTION_BUDGET_MS
+  );
   /** Why the run ended early, so the caller can explain a shortfall. */
   let stopReason: "budget" | "barren" | "exhausted" | null = null;
   while (out.length < total) {

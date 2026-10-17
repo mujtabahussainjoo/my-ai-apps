@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block title %}Onboarding Dashboard{% endblock %}
+
+{% block content %}
+<section class="panel active" id="tab-overview">
+  <div class="cards" id="summary-cards">
+    <div class="card"><span class="card-label">Open exceptions</span><span class="card-value" id="card-open-exceptions">0</span></div>
+    <div class="card"><span class="card-label">Human review</span><span class="card-value" id="card-human-review">0</span></div>
+    <div class="card"><span class="card-label">Overdue tasks</span><span class="card-value" id="card-overdue">0</span></div>
+    <div class="card"><span class="card-label">Due soon</span><span class="card-value" id="card-approaching">0</span></div>
+    <div class="card"><span class="card-label">Failed operations</span><span class="card-value" id="card-failed">0</span></div>
+    <div class="card"><span class="card-label">Idempotent skips</span><span class="card-value" id="card-skipped">0</span></div>
+  </div>
+
+  <div class="panel-header">
+    <h2>Run a demo scenario</h2>
+    <p class="hint">Each scenario feeds a sample event through the real workflow.</p>
+  </div>
+  <div class="scenario-grid">
+    {% for scenario in scenarios %}
+    <button class="scenario" type="button" data-scenario="{{ scenario.key }}">
+      <strong>{{ scenario.label }}</strong>
+      <span>{{ scenario.description }}</span>
+    </button>
+    {% endfor %}
+  </div>
+
+  <div class="panel-header">
+    <h2>Manually ingest an event (feeds through workflow)</h2>
+    <p class="hint">Send a custom event into the workflow - validated, propagated, and audited.</p>
+  </div>
+  <div class="form-panel">
+    <div class="form-row">
+      <input id="evt-event_id" type="text" placeholder="event_id (e.g. evt-999)" />
+      <input id="evt-source" type="text" placeholder="source (ashby or workday_intake)" value="ashby" />
+      <input id="evt-employee_id" type="text" placeholder="employee_id (e.g. EMP-999)" />
+    </div>
+    <div class="form-row">
+      <input id="evt-event_type" type="text" placeholder="event_type (new_hire or employee_updated)" value="employee_updated" />
+      <input id="evt-changed_fields" type="text" placeholder="changed_fields (comma separated)" value="legal_name" />
+      <input id="evt-received_at" type="text" placeholder="received_at (ISO8601, optional)" />
+    </div>
+    <div class="form-row">
+      <input id="evt-name" type="text" placeholder="employee.name" />
+      <input id="evt-start_date" type="text" placeholder="employee.start_date" />
+      <input id="evt-location" type="text" placeholder="employee.location/work_location" />
+    </div>
+    <div class="form-row">
+      <input id="evt-address" type="text" placeholder="employee.address" />
+      <input id="evt-dept" type="text" placeholder="employee.department" />
+      <input id="evt-job_title" type="text" placeholder="employee.job_title" />
+    </div>
+    <button class="ghost" id="ingest-event-btn" type="button">Ingest event</button>
+    <div id="ingest-result" class="result hidden"></div>
+  </div>
+  <div id="scenario-result" class="result hidden"></div>
+</section>
+
+{% for sys in systems %}
+<section class="panel" id="tab-sys-{{ sys.key }}" data-system="{{ sys.key }}">
+  <div class="panel-header">
+    <div>
+      <h2>{{ sys.display_name }}
+        <span class="tag" id="sys-status-{{ sys.key }}">-</span>
+      </h2>
+      <p class="hint">{{ sys.role }}</p>
+    </div>
+    <span class="tag info" id="sys-count-{{ sys.key }}">0 records</span>
+  </div>
+  <div id="sys-body-{{ sys.key }}" class="system-body"></div>
+  {% if sys.kind == 'target' %}
+  <div class="panel-header">
+    <h2>Feed data directly to this portal (bypasses workflow/gates)</h2>
+    <p class="hint">Direct write to the demo portal for {{ sys.display_name }}.</p>
+  </div>
+  <div class="form-panel">
+    <div class="form-row">
+      <input id="feed-{{ sys.key }}-employee_id" type="text" placeholder="employee_id" />
+      <input id="feed-{{ sys.key }}-event_id" type="text" placeholder="event_id (optional)" />
+      <input id="feed-{{ sys.key }}-opkey" type="text" placeholder="operation_key (optional)" />
+    </div>
+    <div class="form-row">
+      <textarea id="feed-{{ sys.key }}-data" rows="3" placeholder='{"legal_name":"Jane","start_date":"2026-11-01","work_location":"Bangalore","department":"Eng"}'></textarea>
+    </div>
+    <button class="ghost" id="feed-{{ sys.key }}-btn" type="button">Write directly to {{ sys.display_name }}</button>
+    <div id="feed-{{ sys.key }}-result" class="result hidden"></div>
+  </div>
+  {% endif %}
+  {% if sys.key == 'ai' %}
+  <div class="panel-header"><h2>Ask the copilot</h2>
+    <p class="hint">Read-only assistant grounded in the current dashboard state.</p></div>
+  <div class="chat" id="chat">
+    <div class="chat-log" id="chat-log">
+      <div class="msg assistant">
+        <div class="bubble">Hi! I'm the read-only onboarding copilot. Ask me about open exceptions,
+        overdue tasks, failed operations or the audit trail.</div>
+      </div>
+    </div>
+    <form class="chat-form" id="chat-form">
+      <input id="chat-input" type="text" autocomplete="off"
+             placeholder="e.g. What exceptions need human review?" />
+      <button type="submit">Send</button>
+    </form>
+  </div>
+  {% endif %}
+</section>
+{% endfor %}
+
+<section class="panel" id="tab-exceptions">
+  <div class="panel-header">
+    <h2>Open exceptions</h2>
+    <p class="hint">A human resolves these; the AI copilot only recommends.</p>
+  </div>
+  <div id="exceptions-list" class="list"></div>
+</section>
+
+<section class="panel" id="tab-audit">
+  <div class="panel-header">
+    <h2>Audit trail</h2>
+    <p class="hint">Newest first. Sensitive fields are masked upstream.</p>
+  </div>
+  <div id="audit-list" class="list"></div>
+</section>
+
+<section class="panel" id="tab-tasks">
+  <div class="panel-header">
+    <h2>Tasks &amp; deadlines</h2>
+    <button class="ghost" id="run-monitor-btn" type="button">Run deadline monitor</button>
+  </div>
+  <div id="monitor-summary" class="monitor-summary"></div>
+  <div id="tasks-list" class="list"></div>
+</section>
+
+<section class="panel" id="tab-ledger">
+  <div class="panel-header">
+    <h2>Operation ledger</h2>
+    <p class="hint">Idempotency keys: employee | event | target | operation.</p>
+  </div>
+  <div id="ledger-list" class="list"></div>
+</section>
+{% endblock %}

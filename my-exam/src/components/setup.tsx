@@ -26,13 +26,18 @@ export function QuizSetup({
   const start = async () => {
     setBusy(true);
     setErr(null);
-    const res = await createQuiz({ examId: examId || null, topicId: null, mode: "quiz", count, types });
-    setBusy(false);
-    if (!res.ok) {
-      setErr(res.error);
-      return;
+    try {
+      const res = await createQuiz({ examId: examId || null, topicId: null, mode: "quiz", count, types });
+      if (!res.ok) {
+        setErr(res.error);
+        return;
+      }
+      router.push(`/quiz/${res.id}`);
+    } catch {
+      setErr("The server took too long to answer. Try again, or ask for fewer questions.");
+    } finally {
+      setBusy(false);
     }
-    router.push(`/quiz/${res.id}`);
   };
 
   return (
@@ -121,15 +126,20 @@ export function MockSetup({
       setBusy(false);
       return;
     }
-    const res = await createMock({ examId, count });
-    setBusy(false);
-    if (!res.ok) {
-      setErr(res.error);
-      return;
+    try {
+      const res = await createMock({ examId, count });
+      if (!res.ok) {
+        setErr(res.error);
+        return;
+      }
+      const data = res as { data?: { aiAdded?: number } };
+      if (data.data?.aiAdded) setNotice(true);
+      router.push(`/mock/${res.id}`);
+    } catch {
+      setErr("The server took too long to answer. Try again, or ask for fewer questions.");
+    } finally {
+      setBusy(false);
     }
-    const data = res as { data?: { aiAdded?: number } };
-    if (data.data?.aiAdded) setNotice(true);
-    router.push(`/mock/${res.id}`);
   };
 
   return (

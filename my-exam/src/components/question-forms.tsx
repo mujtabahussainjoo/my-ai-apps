@@ -38,27 +38,32 @@ export function GenerateQuestionsPanel({
     setBusy(true);
     setErr(null);
     setMsg(null);
-    const res = await generateQuestions({
-      examId: selectedExam || null,
-      knowledgeBaseId: selectedKb || null,
-      topicIds: selectedMaterial ? [] : selectedTopic ? [selectedTopic] : [],
-      materialId: selectedMaterial || null,
-      type,
-      count,
-    });
-    setBusy(false);
-    if (!res.ok) {
-      setErr(res.error);
-      return;
+    try {
+      const res = await generateQuestions({
+        examId: selectedExam || null,
+        knowledgeBaseId: selectedKb || null,
+        topicIds: selectedMaterial ? [] : selectedTopic ? [selectedTopic] : [],
+        materialId: selectedMaterial || null,
+        type,
+        count,
+      });
+      if (!res.ok) {
+        setErr(res.error);
+        return;
+      }
+      const created = (res as { data?: { created?: number }; warning?: string }).data?.created ?? 0;
+      const warning = (res as { warning?: string }).warning;
+      if (warning) setErr(warning);
+      else
+        setMsg(
+          `Added ${created} ${type === "true_false" ? "true/false" : type} question${created === 1 ? "" : "s"} to your bank.`
+        );
+      router.refresh();
+    } catch {
+      setErr("The server took too long to answer. Try again, or ask for fewer questions.");
+    } finally {
+      setBusy(false);
     }
-    const created = (res as { data?: { created?: number }; warning?: string }).data?.created ?? 0;
-    const warning = (res as { warning?: string }).warning;
-    if (warning) setErr(warning);
-    else
-      setMsg(
-        `Added ${created} ${type === "true_false" ? "true/false" : type} question${created === 1 ? "" : "s"} to your bank.`
-      );
-    router.refresh();
   };
 
   // Subtopic options = the titles the user uploaded (chapters/sections).

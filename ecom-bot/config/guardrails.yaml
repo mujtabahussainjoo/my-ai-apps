@@ -1,0 +1,9 @@
+# Guardrail configuration. Security is enforced in code; these values tune behavior.
+
+guardrails:
+  enabled: true
+  prompt_injection_action: block      # block | flag (flag => log + continue with sanitized input)
+  redact_pii_in_logs: true
+  redact_pii_in_tickets: true
+  max_prompt_injection_score: 0.7     # heuristic threshold for the injection detector
+  refuse_high_impact_actions: true    # refunds/cancellations are never executed by agents

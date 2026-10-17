@@ -1,0 +1,17 @@
+{
+  "event_id": "event-203",
+  "source": "ashby",
+  "employee_id": "EMP-102",
+  "event_type": "employee_updated",
+  "changed_fields": ["work_location"],
+  "approved": true,
+  "received_at": "2026-10-05T12:00:00Z",
+  "employee": {
+    "name": "Ananya Rao",
+    "start_date": "2026-11-16",
+    "location": "Bangalore",
+    "address": "Sample shipping address, Bangalore",
+    "department": "Marketing",
+    "job_title": "Content Strategist"
+  }
+}

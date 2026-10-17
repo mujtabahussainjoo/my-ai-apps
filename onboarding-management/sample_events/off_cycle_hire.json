@@ -1,0 +1,25 @@
+{
+  "event_id": "event-204",
+  "source": "workday_intake",
+  "employee_id": "EMP-103",
+  "event_type": "new_hire_off_cycle",
+  "changed_fields": [
+    "employee_id",
+    "legal_name",
+    "start_date",
+    "work_location",
+    "shipping_address",
+    "department",
+    "job_title"
+  ],
+  "approved": true,
+  "received_at": "2026-10-06T08:15:00Z",
+  "employee": {
+    "name": "Vikram Singh",
+    "start_date": "2026-11-23",
+    "location": "Hyderabad",
+    "address": "Sample shipping address, Hyderabad",
+    "department": "Sales",
+    "job_title": "Account Executive"
+  }
+}

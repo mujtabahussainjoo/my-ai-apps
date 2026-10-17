@@ -1,0 +1,43 @@
+# Docker Compose for local development and deployment.
+# Targets Docker Compose v2 (`docker compose`); the Makefile falls back to legacy
+# `docker-compose` v1 when v2 is unavailable.
+# Services: ecom-bot-pg (Postgres 16 + pgvector, host port 5434) and the API (host port 8010).
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: ecom-bot-pg
+    environment:
+      POSTGRES_USER: ecombot
+      POSTGRES_PASSWORD: ecombot
+      POSTGRES_DB: ecombot
+    ports:
+      - "5434:5432"
+    volumes:
+      - ecombot_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ecombot -d ecombot"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  api:
+    build: .
+    container_name: ecom-bot-api
+    depends_on:
+      - db
+    environment:
+      APP__ENV: development
+      APP__LOG_FORMAT: plain
+      APP__SERVICE_PORT: "8000"
+      DATABASE__URL: postgresql+asyncpg://ecombot:ecombot@db:5432/ecombot
+      AUTH__JWT_SECRET: local-dev-only-not-for-production
+      LLM__PROVIDER: mock
+      INTEGRATIONS__TICKETING_PROVIDER: mock
+    ports:
+      - "8010:8000"
+    restart: unless-stopped
+
+volumes:
+  ecombot_pgdata:

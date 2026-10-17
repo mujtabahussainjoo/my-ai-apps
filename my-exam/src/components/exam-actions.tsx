@@ -24,30 +24,40 @@ export function ExamAIzAction({ examId, knowledgeBases }: { examId: string; know
     setBusy(true);
     setErr(null);
     setMsg(null);
-    const res = await generateQuestions({ examId, knowledgeBaseId: knowledgeBaseId || null, topicIds: [], type, count });
-    setBusy(false);
-    if (!res.ok) {
-      setErr(res.error);
-      return;
+    try {
+      const res = await generateQuestions({ examId, knowledgeBaseId: knowledgeBaseId || null, topicIds: [], type, count });
+      if (!res.ok) {
+        setErr(res.error);
+        return;
+      }
+      const created = (res as { data?: { created?: number } }).data?.created ?? 0;
+      setMsg(`Generated ${created} ${type} question${created === 1 ? "" : "s"}.`);
+      router.refresh();
+    } catch {
+      setErr("The server took too long to answer. Try again, or ask for fewer questions.");
+    } finally {
+      setBusy(false);
     }
-    const created = (res as { data?: { created?: number } }).data?.created ?? 0;
-    setMsg(`Generated ${created} ${type} question${created === 1 ? "" : "s"}.`);
-    router.refresh();
   };
 
   const flashcards = async () => {
     setBusy(true);
     setErr(null);
     setMsg(null);
-    const res = await generateFlashcards({ examId, knowledgeBaseId: knowledgeBaseId || null, topicIds: [], count });
-    setBusy(false);
-    if (!res.ok) {
-      setErr(res.error);
-      return;
+    try {
+      const res = await generateFlashcards({ examId, knowledgeBaseId: knowledgeBaseId || null, topicIds: [], count });
+      if (!res.ok) {
+        setErr(res.error);
+        return;
+      }
+      const created = (res as { data?: { created?: number } }).data?.created ?? 0;
+      setMsg(`Generated ${created} flashcards.`);
+      router.refresh();
+    } catch {
+      setErr("The server took too long to answer. Try again, or ask for fewer questions.");
+    } finally {
+      setBusy(false);
     }
-    const created = (res as { data?: { created?: number } }).data?.created ?? 0;
-    setMsg(`Generated ${created} flashcards.`);
-    router.refresh();
   };
 
   return (
@@ -115,25 +125,35 @@ export function ExamTestActions({ examId }: { examId: string }) {
   const startMock = async () => {
     setBusy(true);
     setErr(null);
-    const res = await createMock({ examId, count: mockCount });
-    setBusy(false);
-    if (!res.ok) {
-      setErr(res.error);
-      return;
+    try {
+      const res = await createMock({ examId, count: mockCount });
+      if (!res.ok) {
+        setErr(res.error);
+        return;
+      }
+      router.push(`/mock/${res.id}`);
+    } catch {
+      setErr("The server took too long to answer. Try again, or ask for fewer questions.");
+    } finally {
+      setBusy(false);
     }
-    router.push(`/mock/${res.id}`);
   };
 
   const startQuiz = async () => {
     setBusy(true);
     setErr(null);
-    const res = await createQuiz({ examId, topicId: null, mode: "quiz", count: 10 });
-    setBusy(false);
-    if (!res.ok) {
-      setErr(res.error);
-      return;
+    try {
+      const res = await createQuiz({ examId, topicId: null, mode: "quiz", count: 10 });
+      if (!res.ok) {
+        setErr(res.error);
+        return;
+      }
+      router.push(`/quiz/${res.id}`);
+    } catch {
+      setErr("The server took too long to answer. Try again, or ask for fewer questions.");
+    } finally {
+      setBusy(false);
     }
-    router.push(`/quiz/${res.id}`);
   };
 
   return (

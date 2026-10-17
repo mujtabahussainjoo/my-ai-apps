@@ -1,0 +1,8 @@
+# Agent orchestration configuration (router bounds, retry budgets, worker timeouts).
+
+agents:
+  max_graph_iterations: 8        # hard cap on LangGraph super-steps per request
+  max_routing_hops: 3            # max agent-to-agent hand-offs per request
+  max_retry_attempts: 2          # alternative attempts before escalation
+  worker_timeout_seconds: 30
+  enable_llm_router: true        # allow LLM intent fallback when rules are ambiguous

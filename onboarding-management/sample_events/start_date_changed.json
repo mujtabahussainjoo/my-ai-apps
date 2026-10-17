@@ -1,0 +1,17 @@
+{
+  "event_id": "event-202",
+  "source": "ashby",
+  "employee_id": "EMP-101",
+  "event_type": "employee_updated",
+  "changed_fields": ["start_date"],
+  "approved": true,
+  "received_at": "2026-10-05T11:30:00Z",
+  "employee": {
+    "name": "Rahul Sharma",
+    "start_date": "2026-11-09",
+    "location": "Bangalore",
+    "address": "Sample shipping address, Bangalore",
+    "department": "Engineering",
+    "job_title": "Software Engineer"
+  }
+}

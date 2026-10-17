@@ -233,21 +233,26 @@ export function GenerateFlashcardsPanel({
     setBusy(true);
     setErr(null);
     setMsg(null);
-    const res = await generateFlashcards({
-      examId: examId || null,
-      knowledgeBaseId: knowledgeBaseId || null,
-      topicIds: effectiveMaterial ? [] : effectiveTopic ? [effectiveTopic] : [],
-      materialId: effectiveMaterial || null,
-      count,
-    });
-    setBusy(false);
-    if (!res.ok) {
-      setErr(res.error);
-      return;
+    try {
+      const res = await generateFlashcards({
+        examId: examId || null,
+        knowledgeBaseId: knowledgeBaseId || null,
+        topicIds: effectiveMaterial ? [] : effectiveTopic ? [effectiveTopic] : [],
+        materialId: effectiveMaterial || null,
+        count,
+      });
+      if (!res.ok) {
+        setErr(res.error);
+        return;
+      }
+      const created = (res as { data?: { created?: number } }).data?.created ?? 0;
+      setMsg(`Generated ${created} flashcards from your materials.`);
+      router.refresh();
+    } catch {
+      setErr("The server took too long to answer. Try again, or ask for fewer questions.");
+    } finally {
+      setBusy(false);
     }
-    const created = (res as { data?: { created?: number } }).data?.created ?? 0;
-    setMsg(`Generated ${created} flashcards from your materials.`);
-    router.refresh();
   };
 
   return (

@@ -18,14 +18,11 @@ from pydantic import BaseModel
 
 from ecommerce_support.core.exceptions import (
     ConfigurationError,
-    LLMAuthError,
     LLMError,
-    LLMRateLimitError,
     LLMTimeoutError,
 )
 from ecommerce_support.llm.providers.anthropic import (
     AnthropicLLMClient,
-    _normalize_error,
     _to_anthropic_messages,
     _to_anthropic_tool_choice,
 )
@@ -282,21 +279,6 @@ def test_to_anthropic_messages_handles_tool_turns() -> None:
 
 def _httpx_request() -> httpx.Request:
     return httpx.Request("POST", "https://api.anthropic.com/v1/messages")
-
-
-def test_normalize_error_variants() -> None:
-    req = _httpx_request()
-    resp = httpx.Response(401, request=req)
-    assert isinstance(
-        _normalize_error(anthropic.AuthenticationError("no", response=resp, body=None)),
-        LLMAuthError,
-    )
-    assert isinstance(
-        _normalize_error(anthropic.RateLimitError("slow", response=resp, body=None)),
-        LLMRateLimitError,
-    )
-    assert isinstance(_normalize_error(anthropic.APITimeoutError(request=req)), LLMTimeoutError)
-    assert isinstance(_normalize_error(anthropic.APIConnectionError(request=req)), LLMError)
 
 
 async def test_complete_normalizes_provider_error() -> None:

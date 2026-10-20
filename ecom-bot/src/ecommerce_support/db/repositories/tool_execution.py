@@ -60,3 +60,18 @@ class ToolExecutionRepository(BaseRepository):
             .limit(limit)
         )
         return [_to_execution(row) for row in (await self.session.scalars(stmt)).all()]
+
+    async def list_by_message_ids(self, message_ids: list[str]) -> dict[str, list[ToolExecution]]:
+        """Group tool executions by the assistant message they belong to (FR-002, FR-009)."""
+        if not message_ids:
+            return {}
+        stmt = (
+            select(ToolExecutionRow)
+            .where(ToolExecutionRow.message_id.in_(message_ids))
+            .order_by(ToolExecutionRow.created_at.asc())
+        )
+        grouped: dict[str, list[ToolExecution]] = {}
+        for row in (await self.session.scalars(stmt)).all():
+            if row.message_id is not None:
+                grouped.setdefault(row.message_id, []).append(_to_execution(row))
+        return grouped

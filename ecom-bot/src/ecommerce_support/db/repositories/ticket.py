@@ -48,6 +48,45 @@ class TicketRepository(BaseRepository):
         )
         return [_to_ticket(row) for row in (await self.session.scalars(stmt)).all()]
 
+    async def find_active_by_conversation(self, conversation_id: str) -> Ticket | None:
+        """Most recent non-failed ticket for a conversation (duplicate-prevention, FR-043)."""
+        stmt = (
+            select(TicketRow)
+            .where(
+                TicketRow.conversation_id == conversation_id,
+                TicketRow.status != TicketStatus.FAILED,
+            )
+            .order_by(TicketRow.created_at.desc())
+            .limit(1)
+        )
+        row = await self.session.scalar(stmt)
+        return _to_ticket(row) if row is not None else None
+
+    async def create_failed(
+        self, request: TicketRequest, *, provider: TicketProvider, error_code: str
+    ) -> Ticket:
+        """Record a failed creation attempt for audit.
+
+        The ``idempotency_key`` is deliberately **not** stored so a retry is not blocked by the
+        failed attempt (FR-044/ACC-006: escalation preserved, retry available).
+        """
+        row = TicketRow(
+            id=new_id("tkt"),
+            conversation_id=request.conversation_id,
+            provider=provider,
+            status=TicketStatus.FAILED,
+            summary=request.summary,
+            priority=request.priority,
+            external_id=None,
+            url=None,
+            idempotency_key=None,
+            description=request.description or None,
+            request_payload={**request.model_dump(mode="json"), "error_code": error_code},
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return _to_ticket(row)
+
     async def create_idempotent(
         self,
         request: TicketRequest,

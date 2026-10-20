@@ -37,6 +37,23 @@ class ResolutionOutcome(StrEnum):
     ABANDONED = "abandoned"
 
 
+class ResolutionAction(StrEnum):
+    """What the Resolution Agent decides after an answer (FR-024)."""
+
+    AWAIT_CUSTOMER = "await_customer"
+    RETRY = "retry"
+    ESCALATE = "escalate"
+    RESOLVED = "resolved"
+
+
+class Confirmation(StrEnum):
+    """The customer's answer to the "did that resolve your issue?" prompt (FR-046)."""
+
+    YES = "yes"
+    NO = "no"
+    UNKNOWN = "unknown"
+
+
 class Intent(StrEnum):
     ORDER = "order"
     PRODUCT = "product"

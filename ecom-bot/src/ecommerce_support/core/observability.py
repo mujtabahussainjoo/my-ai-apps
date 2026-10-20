@@ -51,6 +51,20 @@ def request_context(
         _conversation_id.reset(token_c)
 
 
+@contextmanager
+def bind_conversation_id(conversation_id: str | None) -> Iterator[None]:
+    """Bind only the conversation id for the duration of the block (FR-054).
+
+    Lets deeper layers (graph nodes, tools, repository calls) attach ``conversation_id`` to their
+    structured logs without threading it through every function signature.
+    """
+    token = _conversation_id.set(conversation_id)
+    try:
+        yield
+    finally:
+        _conversation_id.reset(token)
+
+
 @dataclass(frozen=True, slots=True)
 class TraceContext:
     """Immutable snapshot of correlation data for logging/tracing."""
@@ -61,3 +75,13 @@ class TraceContext:
     @classmethod
     def current(cls) -> TraceContext:
         return cls(request_id=current_request_id(), conversation_id=current_conversation_id())
+
+
+__all__ = [
+    "TraceContext",
+    "bind_conversation_id",
+    "current_conversation_id",
+    "current_request_id",
+    "new_trace_id",
+    "request_context",
+]

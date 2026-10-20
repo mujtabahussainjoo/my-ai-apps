@@ -11,11 +11,12 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
+from ecommerce_support.core.constants import EMBEDDING_DIMENSIONS
 from ecommerce_support.db.base import Base
 from ecommerce_support.db.models.mixins import CreatedAtMixin, TimestampMixin, enum_column_type
 from ecommerce_support.schemas.enums import DocumentStatus
 
-EMBEDDING_DIMENSIONS = 1536
+__all__ = ["EMBEDDING_DIMENSIONS", "DocumentChunk", "PolicyDocument"]
 
 
 class PolicyDocument(Base, TimestampMixin):
@@ -42,6 +43,7 @@ class PolicyDocument(Base, TimestampMixin):
         index=True,
     )
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class DocumentChunk(Base, CreatedAtMixin):

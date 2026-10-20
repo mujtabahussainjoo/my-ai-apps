@@ -1,0 +1,42 @@
+version: "v1"
+cases:
+  - id: refund-window
+    question: How long do I have to return an item for a refund?
+    expected_documents:
+      - Returns Policy
+    expected_quote: thirty days
+    should_abstain: false
+  - id: refund-method
+    question: How are refunds paid back to me?
+    expected_documents:
+      - Returns Policy
+    expected_quote: original payment method
+    should_abstain: false
+  - id: standard-shipping
+    question: How many business days does standard shipping take?
+    expected_documents:
+      - Shipping Policy
+    expected_quote: three to five business days
+    should_abstain: false
+  - id: expedited-shipping
+    question: How fast is expedited shipping?
+    expected_documents:
+      - Shipping Policy
+    expected_quote: one business day
+    should_abstain: false
+  - id: warranty-length
+    question: How long is the warranty on electronics?
+    expected_documents:
+      - Warranty Policy
+    expected_quote: twelve month
+    should_abstain: false
+  - id: warranty-damage
+    question: Is physical damage covered by the warranty?
+    expected_documents:
+      - Warranty Policy
+    expected_quote: not covered
+    should_abstain: false
+  - id: gift-wrapping
+    question: Do you offer gift wrapping?
+    expected_documents: []
+    should_abstain: true

@@ -126,6 +126,25 @@ class ConversationRepository(BaseRepository):
         await self.session.flush()
         return _to_conversation(row, include_messages=False)
 
+    async def list_messages(
+        self, conversation_id: str, *, limit: int = 50, offset: int = 0
+    ) -> tuple[list[Message], int]:
+        """Return a page of a conversation's messages (oldest first) and the total count."""
+        total = await self.session.scalar(
+            select(func.count())
+            .select_from(MessageRow)
+            .where(MessageRow.conversation_id == conversation_id)
+        )
+        stmt = (
+            select(MessageRow)
+            .where(MessageRow.conversation_id == conversation_id)
+            .order_by(MessageRow.created_at.asc(), MessageRow.id.asc())
+            .limit(limit)
+            .offset(offset)
+        )
+        rows = list((await self.session.scalars(stmt)).all())
+        return [_to_message(row) for row in rows], int(total or 0)
+
     async def list_for_user(
         self, user_id: str, *, limit: int = 20, offset: int = 0
     ) -> tuple[list[ConversationSummary], int]:
@@ -153,3 +172,16 @@ class ConversationRepository(BaseRepository):
             for row in rows
         ]
         return summaries, int(total or 0)
+
+    async def delete(self, conversation_id: str) -> bool:
+        """Delete a conversation and its dependent rows (FR-012); ``False`` if absent.
+
+        Messages, feedback, and tickets cascade at the database level; this is the transport for
+        the data-deletion guarantee.
+        """
+        row = await self.session.get(ConversationRow, conversation_id)
+        if row is None:
+            return False
+        await self.session.delete(row)
+        await self.session.flush()
+        return True

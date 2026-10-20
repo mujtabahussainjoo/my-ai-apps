@@ -13,25 +13,13 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
-from anthropic import (
-    APIConnectionError,
-    APIStatusError,
-    APITimeoutError,
-    AsyncAnthropic,
-    AuthenticationError,
-    RateLimitError,
-)
+from anthropic import AsyncAnthropic
 from anthropic.types import Message, TextBlock, ToolUseBlock
 
-from ecommerce_support.core.exceptions import (
-    ConfigurationError,
-    LLMAuthError,
-    LLMError,
-    LLMRateLimitError,
-    LLMTimeoutError,
-)
+from ecommerce_support.core.exceptions import ConfigurationError, LLMError
 from ecommerce_support.llm.base import LLMClient, ModelT
-from ecommerce_support.llm.capabilities import LLMCapability
+from ecommerce_support.llm.capabilities import LLMCapability, capabilities_for
+from ecommerce_support.llm.errors import normalize_error
 from ecommerce_support.llm.types import (
     CompletionRequest,
     CompletionResponse,
@@ -128,34 +116,15 @@ def _to_completion_response(message: Message) -> CompletionResponse:
     )
 
 
-def _normalize_error(error: Exception) -> LLMError:
-    if isinstance(error, AuthenticationError):
-        return LLMAuthError(
-            "LLM provider rejected the credentials.", details={"provider": "anthropic"}
-        )
-    if isinstance(error, RateLimitError):
-        return LLMRateLimitError(
-            "LLM provider rate limit exceeded.", details={"provider": "anthropic"}
-        )
-    if isinstance(error, APITimeoutError):
-        return LLMTimeoutError("LLM provider request timed out.", details={"provider": "anthropic"})
-    if isinstance(error, (APIConnectionError, APIStatusError)):
-        return LLMError(f"LLM provider error: {error}.", details={"provider": "anthropic"})
-    return LLMError("LLM provider call failed.", details={"provider": "anthropic"})
+def _normalize(error: Exception) -> LLMError:
+    return normalize_error("anthropic", error)
 
 
 class AnthropicLLMClient(LLMClient):
     """Anthropic Claude implementation of :class:`LLMClient`."""
 
     provider = "anthropic"
-    capabilities = frozenset(
-        {
-            LLMCapability.complete,
-            LLMCapability.stream,
-            LLMCapability.structured,
-            LLMCapability.tool_calling,
-        }
-    )
+    capabilities = capabilities_for("anthropic")
 
     def __init__(
         self,
@@ -194,7 +163,7 @@ class AnthropicLLMClient(LLMClient):
         try:
             message = await self._client.messages.create(**self._build_kwargs(request))
         except Exception as error:
-            raise _normalize_error(error) from error
+            raise _normalize(error) from error
         return _to_completion_response(self._ensure_message(message))
 
     async def astream(self, request: CompletionRequest) -> AsyncIterator[StreamChunk]:
@@ -206,7 +175,7 @@ class AnthropicLLMClient(LLMClient):
                     yield StreamChunk(delta=text)
                 final = await stream.get_final_message()
         except Exception as error:
-            raise _normalize_error(error) from error
+            raise _normalize(error) from error
         yield StreamChunk(
             done=True,
             finish_reason=final.stop_reason or "stop",
@@ -235,7 +204,7 @@ class AnthropicLLMClient(LLMClient):
         try:
             message = await self._client.messages.create(**kwargs)
         except Exception as error:
-            raise _normalize_error(error) from error
+            raise _normalize(error) from error
         for block in self._ensure_message(message).content:
             if (
                 isinstance(block, ToolUseBlock)
@@ -265,7 +234,7 @@ class AnthropicLLMClient(LLMClient):
         try:
             message = await self._client.messages.create(**kwargs)
         except Exception as error:
-            raise _normalize_error(error) from error
+            raise _normalize(error) from error
         return _to_completion_response(self._ensure_message(message))
 
     async def aclose(self) -> None:

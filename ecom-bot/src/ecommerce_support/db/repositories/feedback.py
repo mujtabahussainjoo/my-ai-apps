@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from ecommerce_support.core.ids import new_id
 from ecommerce_support.db.models import Feedback as FeedbackRow
 from ecommerce_support.db.repositories.base import BaseRepository
-from ecommerce_support.schemas import Feedback, FeedbackRequest
+from ecommerce_support.schemas import Feedback, FeedbackReport, FeedbackRequest
 from ecommerce_support.schemas.enums import ResolutionOutcome
 
 
@@ -66,3 +66,19 @@ class FeedbackRepository(BaseRepository):
         )
         rows = (await self.session.execute(stmt)).all()
         return {outcome: int(count) for outcome, count in rows if outcome is not None}
+
+    async def total(self) -> int:
+        return int(await self.session.scalar(select(func.count()).select_from(FeedbackRow)) or 0)
+
+    async def average_rating(self) -> float | None:
+        value = await self.session.scalar(select(func.avg(FeedbackRow.rating)))
+        return round(float(value), 2) if value is not None else None
+
+    async def report(self) -> FeedbackReport:
+        """Aggregate feedback by rating and resolution outcome (FR-052)."""
+        return FeedbackReport(
+            total=await self.total(),
+            average_rating=await self.average_rating(),
+            by_rating=await self.count_by_rating(),
+            by_outcome=await self.count_by_outcome(),
+        )

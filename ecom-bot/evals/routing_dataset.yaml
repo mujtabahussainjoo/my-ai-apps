@@ -1,0 +1,40 @@
+# Versioned routing / tool-selection evaluation baseline (FR-055).
+#
+# Each case is run through the real agent graph (see scripts/evaluate_agents.py) and scored on:
+#   - intent routing accuracy: `selected_agent` must equal `expected_agent`
+#   - tool selection accuracy: the set of tools invoked must equal `expected_tools`
+#
+# These cases use only public, mock-backed data (no credentials, no PII).
+version: "2026-10-19"
+cases:
+  - id: order-by-id
+    message: "Where is my order ord-1?"
+    expected_agent: order
+    expected_tools: [get_order]
+    user_id: cust-1
+  - id: order-list
+    message: "Show me my orders"
+    expected_agent: order
+    expected_tools: [list_orders]
+    user_id: cust-1
+  - id: product-search
+    message: "Do you sell hammer?"
+    expected_agent: product
+    expected_tools: [search_products]
+  - id: product-stock
+    message: "Is prd-1 in stock?"
+    expected_agent: product
+    expected_tools: [check_stock]
+  - id: policy-question
+    message: "What is your refund policy?"
+    expected_agent: policy
+    expected_tools: [search_policies]
+  - id: account-profile
+    message: "Show me my account"
+    expected_agent: account
+    expected_tools: [get_profile]
+    user_id: cust-1
+  - id: general-greeting
+    message: "hello there"
+    expected_agent: general
+    expected_tools: []

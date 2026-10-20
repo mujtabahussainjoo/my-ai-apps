@@ -24,6 +24,7 @@ class AppError(Exception):
         code: str | None = None,
         details: dict[str, Any] | None = None,
         retryable: bool | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
@@ -32,6 +33,7 @@ class AppError(Exception):
         self.details = details or {}
         if retryable is not None:
             self.retryable = retryable
+        self.headers = headers or {}
 
     def to_dict(self) -> dict[str, Any]:
         """Serializable, non-sensitive representation for API responses and logs."""
@@ -108,6 +110,18 @@ class IngestionError(AppError):
     http_status = 422
 
 
+class UnsupportedDocumentTypeError(IngestionError):
+    """The uploaded document's type is not one of the supported loaders (FR-035)."""
+
+    code = "unsupported_document_type"
+
+
+class DocumentTooLargeError(IngestionError):
+    """The uploaded document exceeds the configured maximum size (FR-035)."""
+
+    code = "document_too_large"
+
+
 # --- LLM layer -------------------------------------------------------------
 
 
@@ -135,6 +149,25 @@ class LLMRateLimitError(LLMError):
 
 class LLMAuthError(LLMError):
     code = "llm_auth_error"
+    retryable = False
+
+
+# --- Embeddings (RAG) ------------------------------------------------------
+
+
+class EmbeddingError(ExternalServiceError):
+    """An embedding provider failed (network, auth, malformed response)."""
+
+    code = "embedding_error"
+
+
+class EmbeddingDimensionError(EmbeddingError):
+    """An embedding vector's length does not match the fixed schema dimension (FR-036).
+
+    Raised loudly instead of silently degrading or truncating vectors.
+    """
+
+    code = "embedding_dimension_error"
     retryable = False
 
 

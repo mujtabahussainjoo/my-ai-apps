@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from ecommerce_support.core.exceptions import LLMError
 from ecommerce_support.llm.base import LLMClient, ModelT
-from ecommerce_support.llm.capabilities import LLMCapability
+from ecommerce_support.llm.capabilities import LLMCapability, capabilities_for
 from ecommerce_support.llm.types import (
     CompletionRequest,
     CompletionResponse,
@@ -42,14 +42,7 @@ class MockLLMClient(LLMClient):
     """
 
     provider = "mock"
-    capabilities = frozenset(
-        {
-            LLMCapability.complete,
-            LLMCapability.stream,
-            LLMCapability.structured,
-            LLMCapability.tool_calling,
-        }
-    )
+    capabilities = capabilities_for("mock")
 
     def __init__(
         self,

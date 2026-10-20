@@ -3,7 +3,7 @@ export PATH := $(HOME)/.local/bin:$(PATH)
 COMPOSE ?= $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
 .DEFAULT_GOAL := help
 
-.PHONY: help install sync lint format format-check typecheck test test-cov check run db-up db-down db-logs migrate migrate-down seed ingest evaluate
+.PHONY: help install sync lint format format-check typecheck test test-cov check run db-up db-down db-logs migrate migrate-down migrate-docker seed ingest evaluate evaluate-agents evaluate-all build up down logs
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -46,6 +46,21 @@ db-down: ## Stop compose services (keeps volume)
 db-logs: ## Tail database logs
 	$(COMPOSE) logs -f db
 
+build: ## Build the API Docker image
+	$(COMPOSE) build
+
+up: ## Start the full stack (db + api) via docker compose
+	$(COMPOSE) up -d --build
+
+down: ## Stop the full stack (keeps the db volume)
+	$(COMPOSE) down
+
+logs: ## Tail api + db logs
+	$(COMPOSE) logs -f api db
+
+migrate-docker: ## Apply migrations inside the api container (uses the compose DATABASE__URL)
+	$(COMPOSE) run --rm api alembic upgrade head
+
 migrate: ## Apply database migrations
 	uv run alembic upgrade head
 
@@ -60,3 +75,8 @@ ingest: ## Ingest policy documents into pgvector
 
 evaluate: ## Run RAG evaluation baseline
 	uv run python scripts/evaluate_rag.py
+
+evaluate-agents: ## Run routing/tool-selection evaluation baseline (no DB required)
+	uv run python scripts/evaluate_agents.py
+
+evaluate-all: evaluate evaluate-agents ## Run both evaluation baselines

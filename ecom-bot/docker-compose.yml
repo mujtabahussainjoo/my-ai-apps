@@ -6,7 +6,7 @@
 services:
   db:
     image: pgvector/pgvector:pg16
-    container_name: ecom-bot-pg
+    container_name: ${COMPOSE_PROJECT_NAME:-ecom-bot}-pg
     environment:
       POSTGRES_USER: ecombot
       POSTGRES_PASSWORD: ecombot
@@ -24,9 +24,10 @@ services:
 
   api:
     build: .
-    container_name: ecom-bot-api
+    container_name: ${COMPOSE_PROJECT_NAME:-ecom-bot}-api
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     environment:
       APP__ENV: development
       APP__LOG_FORMAT: plain

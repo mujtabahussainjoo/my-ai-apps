@@ -48,6 +48,20 @@ class Ticket(Schema):
     updated_at: datetime | None = None
 
 
+class ExternalTicket(Schema):
+    """A ticket as confirmed by the external ticketing service (FR-044).
+
+    Returned only after the provider confirms creation; a provider that cannot confirm MUST raise
+    :class:`~ecommerce_support.core.exceptions.TicketCreationError` instead.
+    """
+
+    provider: TicketProvider
+    external_id: str = Field(min_length=1)
+    status: TicketStatus = TicketStatus.CREATED
+    url: str | None = None
+    summary: str | None = None
+
+
 class TicketStatusResponse(Schema):
     """Customer-queryable ticket status (FR-053)."""
 
@@ -56,3 +70,15 @@ class TicketStatusResponse(Schema):
     status: TicketStatus
     url: str | None = None
     updated_at: datetime | None = None
+
+
+class TicketEscalationResult(Schema):
+    """Outcome of an escalation attempt (FR-043/FR-044).
+
+    ``created`` is false when an existing ticket already covered the request (idempotent reuse).
+    ``message`` is a customer-safe summary that never includes credentials or PII.
+    """
+
+    ticket: Ticket
+    created: bool
+    message: str = Field(min_length=1)

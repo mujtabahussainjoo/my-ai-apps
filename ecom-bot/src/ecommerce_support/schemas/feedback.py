@@ -36,3 +36,12 @@ class Feedback(Schema):
     comment: str | None = Field(default=None, max_length=2000)
     resolution_outcome: ResolutionOutcome | None = None
     created_at: datetime
+
+
+class FeedbackReport(Schema):
+    """Aggregated feedback for reporting (FR-052, FR-055)."""
+
+    total: int = Field(default=0, ge=0)
+    average_rating: float | None = Field(default=None, ge=1.0, le=5.0)
+    by_rating: dict[int, int] = Field(default_factory=dict)
+    by_outcome: dict[ResolutionOutcome, int] = Field(default_factory=dict)

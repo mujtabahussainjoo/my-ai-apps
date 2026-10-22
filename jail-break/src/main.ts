@@ -1,4 +1,5 @@
 import { app, BrowserWindow, desktopCapturer, globalShortcut, ipcMain, screen, session, shell } from "electron";
+import * as fs from "fs";
 import * as path from "path";
 
 // Win32 SetWindowDisplayAffinity affinity values (WinUser.h, user32.dll).
@@ -8,6 +9,17 @@ import * as path from "path";
 const WDA_NONE = 0x0;
 const WDA_MONITOR = 0x1;
 const WDA_EXCLUDEFROMCAPTURE = 0x11;
+
+// Extended window styles (WinUser.h).
+const GWL_EXSTYLE = -20;
+const WS_EX_TOOLWINDOW = 0x00000080;
+const WS_EX_APPWINDOW = 0x00040000;
+
+function nativeAddress(hwndBuffer: Buffer): number {
+  return hwndBuffer.length >= 8
+    ? Number(hwndBuffer.readBigUInt64LE(0))
+    : hwndBuffer.readUInt32LE(0);
+}
 
 function setWindowDisplayAffinityDirect(
   hwndBuffer: Buffer,
@@ -33,10 +45,7 @@ function setWindowDisplayAffinityDirect(
     );
     // hwndBuffer is the raw HWND bytes from getNativeWindowHandle().
     // koffi accepts a number address or void*; read it little-endian.
-    const addr =
-      hwndBuffer.length >= 8
-        ? Number(hwndBuffer.readBigUInt64LE(0))
-        : hwndBuffer.readUInt32LE(0);
+    const addr = nativeAddress(hwndBuffer);
     const ok = SetWindowDisplayAffinity(koffi.as(addr, "void*"), affinity);
     if (ok) return true;
   } catch {
@@ -59,14 +68,57 @@ function setWindowDisplayAffinityDirect(
   }
 }
 
+// Keeps the window out of the taskbar / Alt+Tab / "task view" window list by
+// forcing WS_EX_TOOLWINDOW (and clearing WS_EX_APPWINDOW) on the HWND.
+// Electron's skipTaskbar already does this, but re-asserting it here keeps
+// the app out of the taskbar dropdown even after a show/restore cycle.
+// Optional: only works when koffi is installed.
+function setToolWindowStyleDirect(hwndBuffer: Buffer): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const koffi = require("koffi") as {
+      load: (lib: string) => {
+        stdcall: (fn: string, ret: string, params: string[]) => (...a: unknown[]) => unknown;
+      };
+      as: (v: unknown, t: string) => unknown;
+    };
+    const user32 = koffi.load("user32.dll");
+    const GetWindowLongPtr = user32.stdcall(
+      "GetWindowLongPtrW",
+      "int64",
+      ["void*", "int32"]
+    );
+    const SetWindowLongPtr = user32.stdcall(
+      "SetWindowLongPtrW",
+      "int64",
+      ["void*", "int32", "int64"]
+    );
+    const h = koffi.as(nativeAddress(hwndBuffer), "void*");
+    const current = Number(GetWindowLongPtr(h, GWL_EXSTYLE));
+    const next = (current | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW;
+    if (next === current) return true;
+    return Number(SetWindowLongPtr(h, GWL_EXSTYLE, next)) !== 0;
+  } catch {
+    return false;
+  }
+}
+
 function applyCaptureExclusion(w: BrowserWindow): void {
+  // 1) Keep the window out of the taskbar dropdown / Alt+Tab / task view on
+  //    every platform (Windows: WS_EX_TOOLWINDOW; Linux: utility window).
+  try {
+    w.setSkipTaskbar(true);
+  } catch {
+    /* ignore */
+  }
+
   if (process.platform !== "win32") return;
 
-  // 1) Electron-native path. On Windows this IS
+  // 2) Electron-native path. On Windows this IS
   //    SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE).
   w.setContentProtection(true);
 
-  // 2) Explicit SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE) call,
+  // 3) Explicit SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE) call,
   //    same syscall, for parity with raw Win32 code. Silent on success —
   //    setContentProtection(true) above already applied the affinity, and
   //    koffi/ffi-napi are optional so no log spam when absent.
@@ -74,6 +126,7 @@ function applyCaptureExclusion(w: BrowserWindow): void {
     const hwnd = w.getNativeWindowHandle();
     if (hwnd && hwnd.length) {
       setWindowDisplayAffinityDirect(hwnd as Buffer, WDA_EXCLUDEFROMCAPTURE);
+      setToolWindowStyleDirect(hwnd as Buffer);
     }
   } catch {
     /* affinity already applied via setContentProtection */
@@ -126,10 +179,16 @@ function pollStayMode(): void {
 }
 
 function createWindow(): void {
+  const iconPath = path.join(__dirname, "..", "assets", "icon.png");
   win = new BrowserWindow({
     width: 420,
     height: 760,
+    // Shrinkable down to a phone-sized panel; the renderer reflows at 400px
+    // and 340px wide (see the media queries in styles.css).
+    minWidth: 320,
+    minHeight: 400,
     title: "AI Assistant",
+    ...(fs.existsSync(iconPath) ? { icon: iconPath } : {}),
     alwaysOnTop: true,
     show: false,
     // No taskbar button / thumbnail owner: Explorer draws the taskbar, so
@@ -139,8 +198,11 @@ function createWindow(): void {
     skipTaskbar: true,
     autoHideMenuBar: true,
     backgroundColor: "#121216",
+    // Frameless: the renderer draws its own titlebar (drag region + min/hide).
+    // NOTE: do NOT add titleBarOverlay here — with titleBarStyle:"hidden" it
+    // suppresses Electron's "ready-to-show" event (window never shows) and
+    // stacks native caption buttons on top of the renderer's own buttons.
     titleBarStyle: "hidden",
-    titleBarOverlay: { color: "#121216", symbolColor: "#e8e8ea", height: 38 },
     roundedCorners: true,
     hasShadow: true,
     // Hidden from screenshare via SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE).
@@ -159,15 +221,28 @@ function createWindow(): void {
 
   // Apply WDA_EXCLUDEFROMCAPTURE once ready + re-apply on show
   // (affinity lives on the HWND, re-assert after visibility changes).
-  win.once("ready-to-show", () => {
-    if (!win) return;
+  // NOTE: "ready-to-show" can be suppressed on some Windows setups, so fall
+  // back to "did-finish-load" to guarantee the window is actually shown.
+  let shown = false;
+  const showWindow = (): void => {
+    if (shown || !win) return;
+    shown = true;
     win.setSkipTaskbar(true);
     applyCaptureExclusion(win);
     win.show();
-  });
+  };
+  win.once("ready-to-show", showWindow);
+  win.webContents.once("did-finish-load", showWindow);
   win.on("show", () => {
     if (!win) return;
     // show() can re-add the taskbar button; force it off again.
+    win.setSkipTaskbar(true);
+    applyCaptureExclusion(win);
+  });
+  // Restoring re-creates the caption state, so re-assert the taskbar skip
+  // and the capture exclusion.
+  win.on("restore", () => {
+    if (!win) return;
     win.setSkipTaskbar(true);
     applyCaptureExclusion(win);
   });
@@ -187,7 +262,16 @@ function toggleVisibility(): void {
   }
 }
 
+// Single instance: a second launch (e.g. double-clicking the launcher
+// twice) focuses the existing window instead of starting a second copy.
+// Without this, two instances fight over the same user-data-dir cache.
+const hasInstanceLock = app.requestSingleInstanceLock();
+if (!hasInstanceLock) {
+  app.quit();
+}
+
 app.whenReady().then(() => {
+  if (!hasInstanceLock) return;
   // Allow mic for 🎤 Listen (getUserMedia) + system audio for 📞 caller voice
   // (getDisplayMedia with "Share system audio"). Screenshots still go
   // through the picker; camera stays denied.
@@ -217,6 +301,15 @@ app.whenReady().then(() => {
     }
   );
   createWindow();
+
+  // A second launch (double-clicked launcher) surfaces the running window
+  // instead of spawning a duplicate.
+  app.on("second-instance", () => {
+    if (!win) return;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+  });
 
   // Mouse-movement watcher for Stay On Mode (cheap 4Hz cursor poll).
   setInterval(pollStayMode, 250);

@@ -8,6 +8,7 @@ interface ChatMsg {
 const LS_KEY = "visible-assistant-key-";
 const LS_MODEL = "visible-assistant-model-";
 const LS_PROVIDER = "visible-assistant-provider";
+const LS_SETTINGS_COLLAPSED = "visible-assistant-settings-collapsed";
 
 const providerEl = document.getElementById("provider") as HTMLSelectElement;
 const modelEl = document.getElementById("model") as HTMLInputElement;
@@ -31,6 +32,8 @@ const clearImgBtn = document.getElementById("clearImg") as HTMLButtonElement;
 const callerBtn = document.getElementById("callerBtn") as HTMLButtonElement;
 const callerStatus = document.getElementById("callerStatus") as HTMLElement;
 const stayBtn = document.getElementById("stayBtn") as HTMLButtonElement;
+const settingsEl = document.getElementById("settings") as HTMLElement;
+const settingsToggle = document.getElementById("settingsToggle") as HTMLButtonElement;
 let stayOn = false;
 
 const chatHistory: ChatMsg[] = [];
@@ -50,6 +53,30 @@ const DEFAULTS: Record<Provider, string> = {
   openai: "gpt-4o-mini",
   anthropic: "claude-3-5-sonnet-latest",
 };
+
+// Applied to every request so answers stay skimmable in a narrow always-on-top
+// window: answer first, then points, then code in its own section.
+const SYSTEM_PROMPT = [
+  "You are a precise desktop assistant shown in a narrow always-on-top window.",
+  "",
+  "Format every answer exactly like this:",
+  "1. Start with a one-line direct answer, with the key fact in **bold**. No preamble, no restating the question.",
+  "2. Then answer pointwise: short bullets, one idea per bullet, at most 2 lines each.",
+  "3. Group longer answers under short `##` headings (for example `## Steps`, `## Why`, `## Trade-offs`).",
+  "4. Put ALL code in its own section titled `## Code`, each snippet in a fenced block tagged with its language. Never put explanation inside a code block. When relevant, write the file path on the line just above the block.",
+  "5. Use inline `code` for identifiers, commands, paths, values and flags.",
+  "6. Use a compact Markdown table when comparing options or listing parameters.",
+  "7. End complex answers with `## Key points` (max 3 bullets). Skip it for simple answers.",
+  "8. Prefer concrete names, numbers and commands over generalities. If something is unknown, say so in one bullet instead of guessing.",
+  "9. No filler, no apologies, no closing offers of help.",
+].join("\n");
+
+function setSettingsCollapsed(collapsed: boolean, persist = true): void {
+  settingsEl.classList.toggle("collapsed", collapsed);
+  settingsToggle.textContent = collapsed ? "Show" : "Hide";
+  settingsToggle.title = collapsed ? "Show settings" : "Collapse settings";
+  if (persist) localStorage.setItem(LS_SETTINGS_COLLAPSED, collapsed ? "1" : "0");
+}
 
 function currentProvider(): Provider {
   return (providerEl.value as Provider) || "openai";
@@ -71,11 +98,42 @@ function saveSettings(): void {
   addMsg("assistant", `Saved ${p} settings locally.`);
 }
 
+function enhanceCodeBlocks(root: HTMLElement): void {
+  root.querySelectorAll<HTMLButtonElement>(".code-copy").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const text = btn.closest(".code-block")?.querySelector("code")?.textContent || "";
+      const done = (ok: boolean): void => {
+        btn.textContent = ok ? "Copied" : "Failed";
+        btn.classList.toggle("copied", ok);
+        window.setTimeout(() => {
+          btn.textContent = "Copy";
+          btn.classList.remove("copied");
+        }, 1400);
+      };
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).then(
+          () => done(true),
+          () => done(false)
+        );
+      } else {
+        done(false);
+      }
+    });
+  });
+}
+
 function addMsg(role: ChatRole | "err", text: string): void {
   // "caller" renders its own bubble but is stored as user so the AI answers it.
   const div = document.createElement("div");
   div.className = `msg ${role === "err" ? "err" : role}`;
-  div.textContent = role === "caller" ? `Caller: ${text}` : text;
+  if (role === "assistant" && window.renderMarkdown) {
+    // Structured replies: headings, bullets, tables and code blocks.
+    div.classList.add("md");
+    div.innerHTML = window.renderMarkdown(text);
+    enhanceCodeBlocks(div);
+  } else {
+    div.textContent = role === "caller" ? `Caller: ${text}` : text;
+  }
   chatEl.appendChild(div);
   chatEl.scrollTop = chatEl.scrollHeight;
   if (role === "user" || role === "assistant") chatHistory.push({ role, text });
@@ -88,7 +146,19 @@ function dataUrlToBase64(dataUrl: string): { mime: string; data: string } {
   return { mime, data };
 }
 
-async function callOpenAI(apiKey: string, model: string, prompt: string): Promise<string> {
+function historyForApi(history: ChatMsg[]): Array<{ role: "user" | "assistant"; content: string }> {
+  return history.map((m) => ({
+    role: m.role === "assistant" ? "assistant" : "user",
+    content: m.text,
+  }));
+}
+
+async function callOpenAI(
+  apiKey: string,
+  model: string,
+  prompt: string,
+  history: ChatMsg[]
+): Promise<string> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const content: any[] = [{ type: "text", text: prompt }];
   if (attachedImage) content.push({ type: "image_url", image_url: { url: attachedImage } });
@@ -99,10 +169,11 @@ async function callOpenAI(apiKey: string, model: string, prompt: string): Promis
     body: JSON.stringify({
       model,
       messages: [
-        ...chatHistory.slice(-10).map((m: ChatMsg) => ({ role: m.role, content: m.text })),
+        { role: "system", content: SYSTEM_PROMPT },
+        ...historyForApi(history),
         { role: "user", content },
       ],
-      max_tokens: 1000,
+      max_tokens: 2048,
     }),
   });
   if (!res.ok) throw new Error(`OpenAI ${res.status}: ${await res.text()}`);
@@ -110,7 +181,12 @@ async function callOpenAI(apiKey: string, model: string, prompt: string): Promis
   return json.choices?.[0]?.message?.content ?? "(empty response)";
 }
 
-async function callAnthropic(apiKey: string, model: string, prompt: string): Promise<string> {
+async function callAnthropic(
+  apiKey: string,
+  model: string,
+  prompt: string,
+  history: ChatMsg[]
+): Promise<string> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const content: any[] = [];
   if (attachedImage) {
@@ -133,8 +209,9 @@ async function callAnthropic(apiKey: string, model: string, prompt: string): Pro
     },
     body: JSON.stringify({
       model,
-      max_tokens: 1000,
-      messages: [{ role: "user", content }],
+      max_tokens: 2048,
+      system: SYSTEM_PROMPT,
+      messages: [...historyForApi(history), { role: "user", content }],
     }),
   });
   if (!res.ok) throw new Error(`Anthropic ${res.status}: ${await res.text()}`);
@@ -158,12 +235,19 @@ async function send(): Promise<void> {
   const effectivePrompt =
     prompt ||
     "Read this screen/image carefully. Transcribe the key text shown, then analyze it and answer any questions visible in it. If there is no explicit question, summarize what matters most.";
+  // Snapshot context BEFORE adding the new user turn: the API call appends the
+  // current prompt itself, so pushing it into history first would duplicate it.
+  const history = chatHistory.slice(-10);
+
   addMsg("user", prompt || "(analyzing attached image)");
   inputEl.value = "";
   sendBtn.disabled = true;
   stopSpeaking();
   try {
-    const reply = p === "openai" ? await callOpenAI(apiKey, model, effectivePrompt) : await callAnthropic(apiKey, model, effectivePrompt);
+    const reply =
+      p === "openai"
+        ? await callOpenAI(apiKey, model, effectivePrompt, history)
+        : await callAnthropic(apiKey, model, effectivePrompt, history);
     lastAnswer = reply;
     addMsg("assistant", reply);
   } catch (e) {
@@ -715,6 +799,9 @@ stayBtn.addEventListener("click", () => {
   );
 });
 speakBtn.addEventListener("click", () => toggleSpeak());
+settingsToggle.addEventListener("click", () => {
+  setSettingsCollapsed(!settingsEl.classList.contains("collapsed"));
+});
 clearImgBtn.addEventListener("click", () => {
   attachedImage = null;
   previewWrap.classList.add("hidden");
@@ -723,4 +810,8 @@ hideBtn.addEventListener("click", () => window.assistant?.hide());
 minBtn?.addEventListener("click", () => window.assistant?.minimize());
 
 loadSettings();
+// Small windows start with the settings panel folded so the chat keeps room;
+// a large window opens it. An explicit user choice always wins.
+const savedCollapsed = localStorage.getItem(LS_SETTINGS_COLLAPSED);
+setSettingsCollapsed(savedCollapsed === null ? window.innerHeight < 620 : savedCollapsed === "1", false);
 addMsg("assistant", "Welcome. No taskbar icon, hidden from capture. Press Ctrl+Shift+A to show / hide.");

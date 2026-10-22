@@ -6,7 +6,10 @@
   "scripts": {
     "build": "tsc && node scripts/copy-assets.js",
     "start": "electron dist/main.js --disable-gpu --disable-software-rasterizer --no-sandbox",
-    "start:hidden": "wscript scripts\\start-hidden.vbs",
+    "start:hidden": "wscript \"Start Assistant.vbs\"",
+    "launch": "node scripts/launch.js",
+    "install-app": "node scripts/launch.js --install",
+    "uninstall-app": "node scripts/uninstall.js",
     "dev": "npm run build && npm start"
   },
   "license": "MIT",

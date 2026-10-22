@@ -1,6 +1,9 @@
 ' Launch the app with no console window. Double-clickable, or via:
 '   npm.cmd run start:hidden
-Dim fso, root
+' Kept for backwards compatibility - see "Start Assistant.vbs" in the
+' project root, which also installs dependencies and rebuilds when needed.
+Dim fso, root, shell
 Set fso = CreateObject("Scripting.FileSystemObject")
 root = fso.GetParentFolderName(fso.GetParentFolderName(WScript.ScriptFullName))
-CreateObject("Wscript.Shell").Run """" & root & "\node_modules\electron\dist\electron.exe"" ""dist/main.js""", 0, False
+Set shell = CreateObject("Wscript.Shell")
+shell.Run """" & root & "\Start Assistant.vbs""", 0, False

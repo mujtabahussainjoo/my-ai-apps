@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Install NexaPilot AI
+Comment=One-click installer for NexaPilot AI (builds if needed and installs the desktop app)
+Exec=bash -c 'd="$(dirname "$1")"; cd "$d" || exit 1; chmod +x install.sh uninstall.sh 2>/dev/null; ./install.sh; rc=$?; echo; if [ $rc -eq 0 ]; then echo "NexaPilot AI is installed. You can close this window."; else echo "Installation failed (exit $rc). Scroll up for details."; fi; read -r -p "Press Enter to close..."' _ %k
+Icon=system-software-install
+Terminal=true
+Categories=System;
+Keywords=nexapilot;install;ai;assistant;
+StartupNotify=true

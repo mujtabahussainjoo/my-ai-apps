@@ -1,0 +1,41 @@
+# secrets and local state
+.env
+.env.*
+!.env.example
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+secrets.json
+settings.json
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.spec
+*.egg-info/
+
+# node / frontend
+node_modules/
+frontend/dist/
+.vite/
+coverage/
+
+# rust / tauri
+desktop/src-tauri/target/
+desktop/src-tauri/gen/schemas/
+desktop/src-tauri/binaries/
+
+# logs / editors
+*.log
+.DS_Store
+.idea/
+.vscode/

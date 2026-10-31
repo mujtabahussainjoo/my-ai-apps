@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Uninstall NexaPilot AI
+Comment=Uninstall NexaPilot AI and optionally delete your local data
+Exec=bash -c 'd="$(dirname "$1")"; cd "$d" || exit 1; chmod +x "Uninstall NexaPilot AI.sh" 2>/dev/null; bash "Uninstall NexaPilot AI.sh"' _ %k
+Icon=system-software-remove
+Terminal=true
+Categories=System;
+Keywords=nexapilot;uninstall;remove;
+StartupNotify=true

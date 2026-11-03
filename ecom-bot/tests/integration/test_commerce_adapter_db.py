@@ -6,7 +6,7 @@ skipped automatically when it is unreachable. Each test runs inside a rolled-bac
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,7 +49,7 @@ async def _seed(session: AsyncSession) -> None:
             customer_id="cust-1",
             status=OrderStatus.DELIVERED,
             total=Decimal("9.99"),
-            placed_at=datetime(2026, 10, 1, tzinfo=UTC),
+            placed_at=datetime.now(UTC) - timedelta(days=5),
             items=[
                 OrderItem(
                     product_id="prd-1",

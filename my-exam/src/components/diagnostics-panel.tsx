@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useState } from "react";
+import { useActionState, useSyncExternalStore } from "react";
 import { AlertTriangle, CircleAlert, Eraser, Info, Loader2, ShieldCheck } from "lucide-react";
 import { clearDiagnostics } from "@/lib/actions";
 import type { DiagEvent, DiagLevel } from "@/lib/diagnostics";
@@ -51,17 +51,20 @@ function fmtUtc(iso: string): string {
  * mount is not a hydration mismatch; differing text between server and client
  * render is.
  */
+const subscribeToNothing = () => () => {};
+
 function Timestamp({ iso }: { iso: string }) {
-  const [local, setLocal] = useState<string | null>(null);
-  useEffect(() => {
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return;
-    setLocal(
-      d.toLocaleString(undefined, {
+  const local = useSyncExternalStore(
+    subscribeToNothing,
+    () => {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return null;
+      return d.toLocaleString(undefined, {
         month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit",
-      })
-    );
-  }, [iso]);
+      });
+    },
+    () => null,
+  );
   return <time dateTime={iso}>{local ?? fmtUtc(iso)}</time>;
 }
 

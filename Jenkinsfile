@@ -21,10 +21,11 @@ def STATE_DIR = "${JENKINS_HOME}/my-ai-apps-ci"
 def LAST_FILE = "${STATE_DIR}/last-commit"
 def HOST_WORKSPACE = params.HOST_WORKSPACE ?: '/var/www/html/docker/jenkins/home/workspace/my-ai-apps-ci'
 
-def runInContainer(String image, String dir, String script) {
+def runInContainer(String image, String dir, String script, String extraArgs = '') {
     writeFile file: "${dir}/.ci-step.sh", text: "#!/bin/sh\nset -eu\n${script}\n"
     sh """
         docker run --rm \
+          ${extraArgs} \
           -v '${HOST_WORKSPACE}:${env.WORKSPACE}' \
           -u \$(id -u):\$(id -g) \
           -e HOME=/tmp \
@@ -37,15 +38,41 @@ def runInContainer(String image, String dir, String script) {
 }
 
 def gateEcomBot() {
-    runInContainer('python:3.12-slim', 'app/ecom-bot', '''
+    def net = "ci-ecom-${env.BUILD_NUMBER}"
+    def db = "ci-ecom-db-${env.BUILD_NUMBER}"
+    try {
+        sh """
+            set -eu
+            docker network create '${net}' >/dev/null 2>&1 || true
+            docker rm -f '${db}' >/dev/null 2>&1 || true
+            docker run -d --name '${db}' --network '${net}' \
+              -e POSTGRES_USER=ecombot \
+              -e POSTGRES_PASSWORD=ecombot \
+              -e POSTGRES_DB=ecombot \
+              pgvector/pgvector:pg16 >/dev/null
+            for i in \$(seq 1 30); do
+              if docker exec '${db}' pg_isready -U ecombot -d ecombot >/dev/null 2>&1; then
+                exit 0
+              fi
+              sleep 1
+            done
+            echo "PostgreSQL did not become ready" >&2
+            docker logs '${db}' >&2 || true
+            exit 1
+        """
+        runInContainer('python:3.12-slim', 'app/ecom-bot', '''
 python -m pip install --user --quiet uv
 export PATH="$HOME/.local/bin:$PATH"
 uv sync --frozen
 uv run ruff check .
 uv run ruff format --check .
+uv run alembic upgrade head
 mkdir -p ci-reports
 uv run pytest -q --junitxml=ci-reports/pytest.xml
-''')
+''', "--network '${net}' -e DATABASE__URL=postgresql+asyncpg://ecombot:ecombot@${db}:5432/ecombot")
+    } finally {
+        sh "docker rm -f '${db}' >/dev/null 2>&1 || true; docker network rm '${net}' >/dev/null 2>&1 || true"
+    }
 }
 
 def gateJailBreak() {

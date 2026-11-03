@@ -55,11 +55,13 @@ describe("api client", () => {
   it("rejects HTML from the wrong origin instead of returning null data", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
-        new Response("<!doctype html><html><body>app</body></html>", {
-          status: 200,
-          headers: { "Content-Type": "text/html" },
-        }),
+      vi.fn().mockImplementation(() =>
+        Promise.resolve(
+          new Response("<!doctype html><html><body>app</body></html>", {
+            status: 200,
+            headers: { "Content-Type": "text/html" },
+          }),
+        ),
       ),
     );
     await expect(api.settings()).rejects.toMatchObject({ code: "invalid_response" });

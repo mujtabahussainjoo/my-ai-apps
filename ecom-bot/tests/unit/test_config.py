@@ -19,7 +19,8 @@ from ecommerce_support.core.config import (
 )
 
 
-def test_defaults_load_from_yaml() -> None:
+def test_defaults_load_from_yaml(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DATABASE__URL", raising=False)
     settings = Settings(_env_file=None)
     assert settings.app.env is AppEnv.development
     assert settings.app.service_port == 8000

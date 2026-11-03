@@ -24,6 +24,7 @@ services:
 
   api:
     build: .
+    image: myai-apps/ecom-bot:dev02
     container_name: ${COMPOSE_PROJECT_NAME:-ecom-bot}-api
     depends_on:
       db:

@@ -1,0 +1,49 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: myexam-postgres
+    environment:
+      POSTGRES_USER: myexam
+      POSTGRES_PASSWORD: myexam
+      POSTGRES_DB: myexam
+    volumes:
+      - myexam_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U myexam -d myexam"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [myexam]
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: myai-apps/my-exam:dev02
+    container_name: myexam-web
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      DATABASE_URL: postgres://myexam:myexam@postgres:5432/myexam
+      SESSION_SECRET: ${SESSION_SECRET:-ci-deploy-session-secret}
+      AI_BASE_URL: ${AI_BASE_URL:-http://host.docker.internal:11434/v1}
+      AI_API_KEY: ${AI_API_KEY:-ollama}
+      AI_MODEL: ${AI_MODEL:-llama3.2}
+      AI_EMBEDDING_MODEL: ${AI_EMBEDDING_MODEL:-nomic-embed-text}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-768}
+    ports:
+      - "3000:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [myexam]
+
+volumes:
+  myexam_pgdata:
+
+networks:
+  myexam:
+    driver: bridge

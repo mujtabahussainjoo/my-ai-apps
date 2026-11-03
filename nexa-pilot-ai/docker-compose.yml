@@ -1,0 +1,42 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: myai-apps/nexa-backend:dev02
+    container_name: nexapilot-backend
+    environment:
+      NEXAPILOT_HOST: 0.0.0.0
+      NEXAPILOT_PORT: "8765"
+      NEXAPILOT_DATA_DIR: /data
+      NEXAPILOT_SECRET_BACKEND: file
+      NEXAPILOT_ENVIRONMENT: production
+    volumes:
+      - nexa_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/api/health', timeout=5).status==200 else 1)"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks: [nexa]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: myai-apps/nexa-frontend:dev02
+    container_name: nexapilot-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [nexa]
+
+volumes:
+  nexa_data:
+
+networks:
+  nexa:
+    driver: bridge

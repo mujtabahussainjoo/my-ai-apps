@@ -38,19 +38,22 @@ RUN python -m venv $VIRTUAL_ENV \
 RUN useradd --create-home --uid 10001 financ && chown -R financ:financ /app
 USER financ
 
-COPY --chown=root:root --chmod=0755 infrastructure/docker/entrypoint.common.sh /usr/local/bin/entrypoint.common.sh
+COPY --chown=financ:financ infrastructure/docker/entrypoint.common.sh /usr/local/bin/entrypoint.common.sh
+RUN chmod 0755 /usr/local/bin/entrypoint.common.sh
 
 # ── api ──────────────────────────────────────────────────────────────────────
 FROM base AS api
 EXPOSE 8000
 HEALTHCHECK --interval=15s --timeout=10s --start-period=30s --retries=5 \
     CMD curl -fsS http://localhost:8000/health/live || exit 1
-COPY --chown=root:root --chmod=0755 infrastructure/docker/entrypoint.api.sh /usr/local/bin/entrypoint.api.sh
+COPY --chown=financ:financ infrastructure/docker/entrypoint.api.sh /usr/local/bin/entrypoint.api.sh
+RUN chmod 0755 /usr/local/bin/entrypoint.api.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.api.sh"]
 CMD ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 # ── worker ───────────────────────────────────────────────────────────────────
 FROM base AS worker
-COPY --chown=root:root --chmod=0755 infrastructure/docker/entrypoint.worker.sh /usr/local/bin/entrypoint.worker.sh
+COPY --chown=financ:financ infrastructure/docker/entrypoint.worker.sh /usr/local/bin/entrypoint.worker.sh
+RUN chmod 0755 /usr/local/bin/entrypoint.worker.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.worker.sh"]
 CMD ["python", "-m", "apps.worker.main"]
